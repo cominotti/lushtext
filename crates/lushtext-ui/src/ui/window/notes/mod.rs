@@ -161,8 +161,7 @@ pub use lushtext_services::palette::{
 };
 #[cfg(feature = "test-utils")]
 pub use test_policy::{
-    set_bookmark_excerpt_preview_delay_for_test, set_next_note_body_disposal_probe_for_test,
-    set_notes_browser_budgets_for_test,
+    set_bookmark_excerpt_preview_delay_for_test, set_notes_browser_budgets_for_test,
 };
 
 use lushtext_services::palette as palette_service;

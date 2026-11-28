@@ -30,8 +30,6 @@ struct NotesTestPolicy {
     /// Caps the units one open-editor capture turn takes, beside its clock,
     /// so a test sees several turns however fast the host is (`0` = unset).
     capture_units_per_turn: AtomicUsize,
-    /// One-shot probe capturing which thread drops an installed folded note body.
-    next_note_body_disposal_probe: crate::ui::plain_disposal::DisposalProbeSlot,
 }
 
 impl NotesTestPolicy {
@@ -40,26 +38,11 @@ impl NotesTestPolicy {
             browser_source_text_bytes: AtomicUsize::new(0),
             bookmark_excerpt_preview_delay_ms: AtomicU64::new(0),
             capture_units_per_turn: AtomicUsize::new(0),
-            next_note_body_disposal_probe: crate::ui::plain_disposal::DisposalProbeSlot::new(),
         }
     }
 }
 
 static POLICY: NotesTestPolicy = NotesTestPolicy::new();
-
-/// Arm a one-shot probe reporting which thread drops the next folded note body.
-pub fn set_next_note_body_disposal_probe_for_test(
-    sender: std::sync::mpsc::Sender<std::thread::ThreadId>,
-) {
-    POLICY.next_note_body_disposal_probe.set(sender);
-}
-
-/// Attach the armed disposal probe to one guarded note body, if set.
-pub(super) fn attach_note_body_disposal_probe(
-    owner: crate::ui::plain_disposal::DisposalOwned<String>,
-) -> crate::ui::plain_disposal::DisposalOwned<String> {
-    POLICY.next_note_body_disposal_probe.attach(owner)
-}
 
 /// Narrow the browser's searchable-text budget (`text_bytes`) and cap the
 /// units of one open-editor capture turn (`capture_units_per_turn`) for
