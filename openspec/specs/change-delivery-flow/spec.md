@@ -41,7 +41,7 @@ Under `MERGE-LOCK`, a gate SHALL be skipped only when `scripts/gate-trees.sh` fi
 - **THEN** the ancestor check fails and the agent repeats the merge step instead of merging
 
 ### Requirement: The apply tree's records are checked before the merge stage
-Before the merge stage starts, the script SHALL look up `make check` and `make test` on the apply tree, each in its own lookup. Because `pre-commit` enforces only static checks while live smokes run at `pre-push` and `make verify-local`, it SHALL also look up the three smokes whenever `origin/main...HEAD` touches a smoke-relevant file (`is_relevant` of `scripts/accessibility_source_fingerprint.py`). A no-op merge SHALL rerun only a gate without a pass.
+Before the merge stage starts, the script SHALL look up `make check` and `make test` on the apply tree, each in its own lookup. Because `pre-commit` enforces only static checks while live smokes run at `pre-push` and `make verify-local`, it SHALL also look up the three smokes whenever `origin/main...HEAD` touches a smoke-relevant file (`is_relevant` or `is_visual_sensitive`/`crates/cargo-gtk-proof/`). A no-op merge SHALL rerun only a gate without a pass.
 
 #### Scenario: An apply tree without a make test record stops before the merge stage
 - **WHEN** the apply stage's tree has a `make check` pass on record and no `make test` pass, and `origin/main` has not moved
@@ -458,18 +458,30 @@ Authorized `/goal` and agent workflows MAY merge under `MERGE-LOCK` on local `ga
 - **THEN** `.githooks/pre-push` fails and points to `make smoke-ui`
 
 ### Requirement: Local CI-parity verification runs in one ordered gate
-`make verify-local` SHALL execute `make check`, default-feature `cargo check -p lushtext --bins --locked`, strict `rustdoc` lints, `cargo bench --no-run`, `cargo deny`, `make test`, `make test-prop`, `make fuzz-corpus-replay`, conditional GTK Lush checks when `crates/gtk-lush*` changed, and `make check-smoke-proof` in sequence, while `make smoke-ui` runs the three UI smokes in parallel after one shared build.
+`make verify-local` SHALL short-circuit clean non-`GATE_TREES_CHANGE` docs-only branches to `make pre-commit-docs` unless `VERIFY_FORCE_FULL=1`, and otherwise run `verify-local-fast`, `cargo deny`, `make test`, `make test-prop`, `make fuzz-corpus-replay`, conditional GTK Lush checks, auto-selected smoke lanes (`VERIFY_RUN_SMOKES=auto`), and `make check-smoke-proof`. `make check-policy-docs` SHALL share zero-Cargo terminology, threshold, and boundary scripts, and `make check-smoke-proof` SHALL skip Cargo on non-visual branches.
+
+#### Scenario: Non-visual local verification runs zero Cargo smoke checks
+- **WHEN** `make verify-local` runs on a non-docs branch with no visual-sensitive or accessibility-relevant diffs
+- **THEN** `VERIFY_RUN_SMOKES=auto` skips `smoke-ui` and `make check-smoke-proof` exits 0 in pure Python without spawning Cargo
 
 #### Scenario: Local parity catches rustdoc broken links before push
 - **WHEN** a public module doc comment links a private item
 - **THEN** `make verify-local-fast` and `make verify-local` fail on `cargo doc --workspace --no-deps`
 
+#### Scenario: Clean docs-only branch skips redundant Rust builds in verify-local
+- **WHEN** `make verify-local` runs without `GATE_TREES_CHANGE` on a clean worktree passing `precommit-scope.py docs-only-range`
+- **THEN** it runs `make pre-commit-docs` (including `check-terminology`, `check-thresholds`, and `check-filesystem-boundary`) without compiling Rust or launching widget/smoke suites
+
 ### Requirement: CI workflows short-circuit docs-only pull requests without dropping required checks
-Pull-request CI workflows SHALL classify `base...head` via `scripts/precommit-scope.py docs-only-range` and skip heavy build/test jobs on docs-only diffs while keeping every ruleset-required check job reporting `Success`.
+Pull-request CI workflows SHALL classify `base...head` via `scripts/precommit-scope.py docs-only-range` and `gtk-lush-changed-range`, skipping heavy build/test jobs on docs-only diffs and skipping GTK Lush CI checks when no GTK Lush build input changed while keeping every ruleset-required check job (`GTK Axioms`, `GTK Axioms (GNOME 50 floor)`, and PR `Kani Proof Harnesses`) reporting `Success`.
 
 #### Scenario: Docs-only PR keeps required ruleset checks green
 - **WHEN** a pull request touches only `docs/`, `openspec/`, `.claude/`, `.agents/`, or root `*.md`
 - **THEN** `GTK Axioms`, `GTK Axioms (GNOME 50 floor)`, and the PR `Kani Proof Harnesses` jobs skip heavy containers via step conditions and exit 0, while non-required heavy jobs skip
+
+#### Scenario: Non-gtk-lush PR skips GTK Lush checks cleanly
+- **WHEN** a pull request modifies application or tooling files outside `crates/gtk-lush/`, `crates/gtk-lush-adoption-lab/`, `fixtures/gtk-lush-adoption/`, `.cargo/`, `workspace-hack/`, manifests, `Makefile`, `ci.yml`, and GTK axiom scripts
+- **THEN** `GTK Lush MSRV`, `GTK Lush API Advisory`, and the `gtk-lush-*` steps in `Non-widget Tests` skip, and `GTK Axioms` / `GTK Axioms (GNOME 50 floor)` run their skip-stub step and report `Success`
 
 ### Requirement: Zero-cost structural refactors may claim Timing: none after dual review
 A change touching a timed path solely for zero-cost structural refactoring (`#[repr(transparent)]` wrappers, typed errors, or module moves with unchanged runtime logic) SHALL be permitted to declare `Timing: none` only with explicit rationale confirmed by both independent spec review and final code review.

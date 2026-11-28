@@ -534,9 +534,9 @@ make fmt               # Apply rustfmt everywhere, including widget tests cargo 
 make check             # fmt + all-feature Clippy + fast policy audits (+ clean-tree stamp)
 make pre-commit        # repo static pre-commit gate
 make smoke-ui          # Pre-build once + run accessibility, visual, and visual-geometry smokes
-make check-smoke-proof # Verify branch-level live smoke freshness (origin/main...HEAD)
+make check-smoke-proof # Verify branch-level live smoke freshness (zero-Cargo on non-visual diffs)
 make verify-local-fast # check + bins check + strict rustdoc + bench --no-run
-make verify-local      # Full local CI parity (adds deny, tests, props, fuzz replay, smoke proof)
+make verify-local      # Full local CI parity (docs-only fast path, auto-selected smokes)
 make install-git-hooks
 ```
 

@@ -975,7 +975,7 @@ reference set and it is larger, and it forbids the move:
 | `model/workspace/content_search.rs` | embeds `WorkspaceSearchFallbackMetrics` and `WorkspaceSearchIncompleteReason` in public enum variants |
 | `ui/search_panel/execution.rs` | imports `WorkspaceSearchTraversalPlan` |
 | `crates/lushtext-ui/benches/benchmarks.rs` | addresses `WorkspaceSearchFallbackMetrics` and `WorkspaceSearchTraversalPlan` directly |
-| `crates/lushtext-ui/tests/workspace_terminology.rs` | names the file path literally |
+| `scripts/check-terminology.py` | names the file path literally |
 
 A service and a `model/` sibling both depend on it, so relocating it under
 `ui/search_panel/` would invert dependency direction (`services -> ui`), which

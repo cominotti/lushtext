@@ -100,11 +100,14 @@ pre-commit hook, CI, and contributor docs:
   `origin/main...HEAD` (enforced by `.githooks/pre-push` and `make verify-local`,
   closing S7(b));
 - `make verify-local-fast` and `make verify-local` — full local CI parity
-  (default-feature bin check, strict `rustdoc` gate, `cargo bench --no-run`,
-  `cargo deny`, unit/integration/property tests, fuzz corpus replay, conditional
-  GTK Lush checks, and `check-smoke-proof`; setting `GATE_TREES_CHANGE=<C>` and
-  `VERIFY_RUN_SMOKES=1` runs `make check`, `make test`, and `make smoke-ui`
-  once each and records all canonical gate names in one pass);
+  (`VERIFY_RUN_SMOKES=auto` default short-circuits clean non-`GATE_TREES_CHANGE`
+  docs-only branches to `make pre-commit-docs` unless `VERIFY_FORCE_FULL=1`, and
+  otherwise runs default-feature bin check, strict `rustdoc` gate, `cargo bench
+  --no-run`, `cargo deny`, unit/integration/property tests, fuzz corpus replay,
+  conditional GTK Lush checks via `precommit-scope.py`, auto-selected smoke
+  lanes, and `check-smoke-proof`; setting `GATE_TREES_CHANGE=<C>` records
+  `make check`, `make test`, and all three `smoke-ui` lanes when any smoke
+  predicate matches);
 - `make check-policy-docs` — pure-script subset of `check-policy` (zero Cargo
   compilation) shared by `make pre-commit-docs` and CI `Lint (Docs-only)`;
 - `make smoke-ui` — single pre-build + parallel execution (`SMOKE_PARALLEL=1`,
@@ -142,8 +145,9 @@ attribute, resolved against its file, or a path a `build.rs` names; an include
 it cannot resolve fails when it names one), and runs `scripts/test-git-hooks.sh`
 against isolated scratch repositories. Runtime reads of documentation stay
 allowed. `make pre-commit` and `make check` always include Clippy. A docs-only
-commit still runs `check-policy`, which builds two crates cold in a fresh
-worktree, so commit through `scripts/heavy.sh` either way.
+commit skips Clippy and runs `make pre-commit-docs` (`check-fmt` +
+zero-Cargo `check-policy-docs`); run full `make check` and Cargo commands
+through `scripts/heavy.sh`.
 
 `make check-agent-docs` verifies the `services::filesystem` guidance in rules
 and skills, runs the raw filesystem no-leftovers audit, self-tests rename-safe
@@ -190,8 +194,8 @@ script's own docstring lists them. `docs/workflow-readability-matrix.md` is the
 completion source of truth, and the ordered procedure is the
 `lushtext-workflow` skill.
 
-`make check-terminology` (in `make check-policy`) runs the
-`workspace_terminology` integration test, which scans `AGENTS.md`, `README.md`,
+`make check-terminology` (in both `make check-policy` and `make check-policy-docs`)
+runs `scripts/check-terminology.py` (zero Cargo builds), which scans `AGENTS.md`, `README.md`,
 `data/`, `docs/`, `openspec/specs/`, `resources/ui/`, and the crate sources for
 the retired folder-root and note vocabulary, allowing it only inside the named
 sidecar compatibility constants and fixtures. Keep it in the local gate: it is
@@ -1117,14 +1121,17 @@ measurement and lint jobs run `fedora:45` (the shipped GNOME 51 toolkit); only
 floor's toolkit behaviour stays pinned by the axioms. The Snap change must run
 the widget suite on its platform first.
 
-- `.github/workflows/ci.yml` — `Scope` (`scripts/precommit-scope.py docs-only-range`),
-  `Lint Docs` (docs-only PR check-policy), `Lint` (rustfmt, all-targets/all-features
+- `.github/workflows/ci.yml` — `Scope` (`scripts/precommit-scope.py docs-only-range`
+  and `gtk-lush-changed-range`), `Lint (Docs-only)` (`make check-policy-docs`),
+  `Lint` (rustfmt, all-targets/all-features
   Clippy, filesystem-boundary audit, workflow-timeout policy, Python hygiene,
   Blueprint drift and contract, the rustdoc gate, and the default-feature
-  `cargo check -p lushtext --bins --locked`), `Non-widget Tests`, `GTK Axioms`
+  `cargo check -p lushtext --bins --locked`), `Non-widget Tests` (conditional
+  `gtk-lush-*` steps gated on `gtk_lush_changed`), `GTK Lush MSRV`,
+  `GTK Lush API Advisory`, `GTK Axioms`
   and `GTK Axioms (GNOME 50 floor)` (two jobs rather than a matrix, so the
   shipped-runtime check keeps its name; both short-circuit heavy steps on
-  docs-only PRs while still emitting green `Success` for Ruleset `23911547`),
+  docs-only or non-`gtk-lush` PRs while still emitting green `Success` for Ruleset `23911547`),
   `Widget Shard Table`, `Widget Tests (<shard>)`, `Property Tests` (keep it
   separate from the non-widget and mutation jobs), `Bench Compile`, and
   `Dependency Policy` (`cargo deny check advisories bans sources licenses`).

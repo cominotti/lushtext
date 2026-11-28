@@ -17,6 +17,7 @@ from pathlib import Path
 from accessibility_source_fingerprint import (
     entries_digest,
     is_relevant,
+    query_required,
     relevant_status,
     source_entries,
     source_fingerprint,
@@ -840,22 +841,41 @@ def run_self_test() -> None:
     assert not is_relevant("crates/lushtext/tests/widget/window.rs"), (
         "widget tests must be excluded from smoke source fingerprints (Decision 7)"
     )
+    # Pure Markdown docs are audited statically by check-accessibility-policy,
+    # check-automation-docs, and check-end-user-smoke-workflow; none are read
+    # at runtime by smoke drivers, so editing them never triggers Mutter churn.
+    for doc_path in (
+        "docs/accessibility.md",
+        "docs/accessibility-matrix.md",
+        "docs/accessibility-orca-checklist.md",
+        "docs/automation.md",
+        "docs/automation-reference.md",
+        "docs/end-user-coverage.md",
+    ):
+        assert not is_relevant(doc_path), (
+            f"{doc_path} must stay outside runtime smoke source fingerprints"
+        )
     saved_git_env = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("GIT_")}
     os.environ["GIT_CONFIG_GLOBAL"] = "/dev/null"
     os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
     try:
         with tempfile.TemporaryDirectory() as tmp:
             r = Path(tmp)
+            assert query_required(r), "missing .git directory must require smoke proof"
             for cmd in (["init", "-q"], ["config", "user.name", "t"], ["config", "user.email", "t@example.invalid"], ["config", "commit.gpgsign", "false"]):
                 subprocess.run(["git", "-C", str(r), *cmd], check=True)
             (r / "crates/lushtext-ui/src/ui").mkdir(parents=True)
             (r / "crates/lushtext-ui/src/ui/x.rs").write_text("pub fn f() {}\n", encoding="utf-8")
             subprocess.run(["git", "-C", str(r), "add", "-A"], check=True)
             subprocess.run(["git", "-C", str(r), "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "base"], check=True)
+            assert not query_required(r), "clean repo must not require smoke proof"
             (r / "docs").mkdir(exist_ok=True)
+            (r / "docs/automation.md").write_text("# doc\n", encoding="utf-8")
+            assert not query_required(r), "pure docs edit must not require smoke proof"
             subprocess.run(["git", "-C", str(r), "mv", "crates/lushtext-ui/src/ui/x.rs", "docs/x.rs"], check=True)
             moved_rows, ok_status = relevant_status(r)
             assert ok_status and moved_rows, "renaming a relevant file out of ui/ must still report relevant_status"
+            assert query_required(r), "relevant edit must require smoke proof"
     finally:
         for k in list(os.environ):
             if k.startswith("GIT_"):

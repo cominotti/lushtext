@@ -629,8 +629,8 @@ check-workflow-scripts:
 # The build-cache helpers of reduce-build-disk-writes: the cache root
 # (scripts/build-cache.sh, with its three text audits), the mutation slots'
 # sync and merge, the per-test address-space runner, the docs-only pre-commit
-# scope, the proof-strength relocation, and run-mutants.sh's mirror mode
-# (against a stub cargo). No cargo, temporary caches only.
+# scope, and run-mutants.sh's mirror mode (against a stub cargo). Note that
+# proof-strength.py --self-test runs under check-kani-shards. No cargo, temporary caches only.
 # The parallel front-end rustc-wrapper heavy.sh installs: shellcheck, its
 # fake-compiler self-test (only the checkout's own unoptimized units, scoped
 # RUSTC_BOOTSTRAP, the chain to the next wrapper, every passthrough case) and
@@ -657,7 +657,6 @@ check-build-cache-helpers:
 	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/mutants-mirror.py --self-test
 	./scripts/test-address-space-runner.sh --self-test
 	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/precommit-scope.py --self-test
-	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/proof-strength.py --self-test
 	./scripts/run-mutants.sh --self-test
 
 # No Rust build input is on the docs-only commit allowlist (.githooks/pre-commit),
@@ -857,7 +856,8 @@ SMOKE_ARTIFACT_DIR ?= build/smoke
 SMOKE_PROOF_BASE_REF ?= origin/main
 SMOKE_PARALLEL ?= 1
 GATE_TREES_CHANGE ?=
-VERIFY_RUN_SMOKES ?= 0
+VERIFY_RUN_SMOKES ?= auto
+VERIFY_FORCE_FULL ?= 0
 VERIFY_ALL_GTK_LUSH ?= 0
 
 # Run all three UI smoke lanes (accessibility, visual, visual-geometry) after one
@@ -1115,7 +1115,7 @@ check-smoke-proof:
 		base_flag="--base-ref $(SMOKE_PROOF_BASE_REF)"; \
 	fi; \
 	./scripts/check-accessibility-policy.py --strict-current-tree $$base_flag && \
-	cargo run -q -p cargo-gtk-proof -- policy --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" $$base_flag
+	./scripts/check-visual-proof-policy.py --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" $$base_flag
 
 # Static Python hygiene gate (syntax, bare except, duplicate dict keys, redundant regexes).
 check-python-hygiene:
@@ -1236,7 +1236,7 @@ gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 check-policy: check-filesystem-boundary check-hexagonal-boundaries check-domain-value-types check-error-contracts check-idiomatic-state check-arc-safety check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-python-hygiene check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
 
 # Pure-script subset of check-policy (zero Cargo builds) for docs-only hooks and CI.
-check-policy-docs: check-workflow-scripts check-agent-docs check-agent-skills check-workflow-timeouts check-flatpak-ci-builds check-precommit-scope check-python-hygiene check-accessibility-policy check-automation-docs check-end-user-smoke-workflow check-workflow-boundaries check-gtk-axioms check-gtk-lush-policy gtk-lush-adoption-matrix
+check-policy-docs: check-workflow-scripts check-agent-docs check-agent-skills check-workflow-timeouts check-flatpak-ci-builds check-precommit-scope check-python-hygiene check-terminology check-thresholds check-filesystem-boundary check-accessibility-policy check-automation-docs check-end-user-smoke-workflow check-workflow-boundaries check-gtk-axioms check-gtk-lush-policy gtk-lush-adoption-matrix
 
 # Two-zone Arc safety, SharedPath/SharedStr adoption, and cold generic-Fn ratchet.
 .PHONY: check-arc-safety
@@ -1283,7 +1283,8 @@ check-kill-point-gating:
 # after the offending commit is already on main.
 check-terminology:
 	@echo "Checking workspace folder terminology..."
-	cargo test -p lushtext-ui --test workspace_terminology
+	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/check-terminology.py --self-test
+	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/check-terminology.py
 
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
@@ -1323,15 +1324,24 @@ verify-local-fast:
 	cargo bench -p lushtext-model -p lushtext-services -p lushtext-ui --features test-utils --no-run
 
 # Full local CI-parity gate on final code/archive tree.
-# With GATE_TREES_CHANGE=<C> (and optional VERIFY_RUN_SMOKES=1), executes and records
-# 'make check', 'make test', and 'make smoke-ui' once each with zero duplication.
-verify-local: verify-local-fast
-	@echo "Running full local CI parity checks..."
+# With VERIFY_RUN_SMOKES=auto (default), short-circuits to pre-commit-docs when
+# SMOKE_PROOF_BASE_REF...HEAD is clean & docs-only (override VERIFY_FORCE_FULL=1),
+# otherwise runs check/test plus only the UI smoke lanes needed by the diff.
+# With GATE_TREES_CHANGE=<C>, records 'make check', 'make test', and any executed
+# smoke lane under its canonical gate string.
+verify-local:
 	@set -eu; \
 	base_ref="$(SMOKE_PROOF_BASE_REF)"; \
 	if [ -n "$$base_ref" ]; then \
 		git rev-parse --verify --quiet "$$base_ref^{commit}" >/dev/null 2>&1 || { echo "SMOKE_PROOF_BASE_REF '$$base_ref' could not be resolved" >&2; exit 1; }; \
 	fi; \
+	if [ "$(VERIFY_FORCE_FULL)" != "1" ] && [ -z "$(GATE_TREES_CHANGE)" ] && [ -n "$$base_ref" ] && [ -z "$$(git status --porcelain=v1 --untracked-files=all)" ] && ./scripts/precommit-scope.py docs-only-range "$$base_ref" HEAD; then \
+		echo "Docs-only branch relative to $$base_ref; running zero-Cargo verify-local docs gate..."; \
+		$(MAKE) pre-commit-docs; \
+		exit 0; \
+	fi; \
+	$(MAKE) verify-local-fast GATE_TREES_CHANGE="$(GATE_TREES_CHANGE)"; \
+	echo "Running full local CI parity checks..."; \
 	if command -v cargo-deny >/dev/null 2>&1; then \
 		cargo deny check advisories bans sources licenses; \
 	elif git status --porcelain -- Cargo.toml Cargo.lock deny.toml | grep -q . || \
@@ -1340,28 +1350,57 @@ verify-local: verify-local-fast
 		exit 1; \
 	else \
 		echo "cargo-deny not installed; skipping dependency policy (no Cargo/deny manifest diff)"; \
-	fi
-	@set -eu; \
+	fi; \
 	if [ -n "$(GATE_TREES_CHANGE)" ]; then \
 		./scripts/gate-trees.sh record . --change "$(GATE_TREES_CHANGE)" --gate 'make test' -- $(MAKE) test; \
 	else \
 		$(MAKE) test; \
-	fi
-	$(MAKE) test-prop
-	$(MAKE) fuzz-corpus-replay
-	@set -eu; \
-	base_ref="$(SMOKE_PROOF_BASE_REF)"; \
-	if [ -n "$$base_ref" ]; then \
-		git rev-parse --verify --quiet "$$base_ref^{commit}" >/dev/null 2>&1 || { echo "SMOKE_PROOF_BASE_REF '$$base_ref' could not be resolved" >&2; exit 1; }; \
 	fi; \
-	if [ "$(VERIFY_ALL_GTK_LUSH)" = "1" ] || \
-	   git status --porcelain -- crates/gtk-lush crates/gtk-lush-adoption-lab fixtures/gtk-lush-adoption | grep -q . || \
-	   ( [ -n "$$base_ref" ] && git diff --name-only "$$base_ref...HEAD" -- crates/gtk-lush crates/gtk-lush-adoption-lab fixtures/gtk-lush-adoption | grep -q . ); then \
+	$(MAKE) test-prop; \
+	$(MAKE) fuzz-corpus-replay; \
+	if [ "$(VERIFY_ALL_GTK_LUSH)" = "1" ] || ./scripts/precommit-scope.py gtk-lush-changed-worktree "$$base_ref"; then \
 		$(MAKE) gtk-lush-doctests gtk-lush-examples gtk-lush-adoption-lab gtk-lush-stock-fixtures; \
-	fi
-	@if [ "$(VERIFY_RUN_SMOKES)" = "1" ]; then \
+	fi; \
+	base_flag=""; \
+	if [ -n "$$base_ref" ]; then \
+		base_flag="--base-ref $$base_ref"; \
+	fi; \
+	run_a11y=0; run_vg=0; \
+	case "$(VERIFY_RUN_SMOKES)" in \
+		1) run_a11y=1; run_vg=1 ;; \
+		0) ;; \
+		auto) \
+			if ./scripts/accessibility_source_fingerprint.py --query-required $$base_flag >/dev/null; then run_a11y=1; fi; \
+			if ./scripts/check-visual-proof-policy.py --query-required $$base_flag >/dev/null; then run_vg=1; fi ;; \
+		*) echo "invalid VERIFY_RUN_SMOKES='$(VERIFY_RUN_SMOKES)' (expected auto, 1, or 0)" >&2; exit 2 ;; \
+	esac; \
+	if [ "$$run_a11y" -eq 1 ] && [ "$$run_vg" -eq 1 ]; then \
 		$(MAKE) smoke-ui GATE_TREES_CHANGE="$(GATE_TREES_CHANGE)"; \
-	fi
+	elif [ -n "$(GATE_TREES_CHANGE)" ] && ( [ "$$run_a11y" -eq 1 ] || [ "$$run_vg" -eq 1 ] ); then \
+		$(MAKE) smoke-ui GATE_TREES_CHANGE="$(GATE_TREES_CHANGE)"; \
+	elif [ "$$run_vg" -eq 1 ]; then \
+		$(MAKE) build-debug composition-hold-build; \
+		cargo build -q -p cargo-gtk-proof; \
+		$(TEMP_SCOPE) vg -- cargo run -q -p cargo-gtk-proof -- run --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir scripts/visual-geometry-scenarios --binary "$(CURDIR)/target/debug/lushtext" --composition-hold-binary "$(CURDIR)/target/composition-hold/debug/lushtext" $$base_flag; \
+	elif [ "$$run_a11y" -eq 1 ]; then \
+		$(MAKE) build-debug smoke-read-faults-build; \
+		if [ "$(SMOKE_PARALLEL)" = "1" ]; then \
+			p1=""; p2=""; \
+			trap 'kill -TERM "$$p1" "$$p2" 2>/dev/null || true' INT TERM; \
+			$(TEMP_SCOPE) accessibility -- ./scripts/run-accessibility-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/accessibility" --read-fault-binary "$(CURDIR)/target/smoke-read-faults/debug/lushtext" & p1=$$!; \
+			$(TEMP_SCOPE) visual -- ./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual" --read-fault-binary "$(CURDIR)/target/smoke-read-faults/debug/lushtext" & p2=$$!; \
+			rc=0; \
+			wait "$$p1" || { code=$$?; if [ "$$rc" -eq 0 ]; then rc=$$code; fi; }; \
+			wait "$$p2" || { code=$$?; if [ "$$rc" -eq 0 ]; then rc=$$code; fi; }; \
+			trap - INT TERM; \
+			[ "$$rc" -eq 0 ] || exit "$$rc"; \
+		else \
+			$(TEMP_SCOPE) accessibility -- ./scripts/run-accessibility-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/accessibility" --read-fault-binary "$(CURDIR)/target/smoke-read-faults/debug/lushtext"; \
+			$(TEMP_SCOPE) visual -- ./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual" --read-fault-binary "$(CURDIR)/target/smoke-read-faults/debug/lushtext"; \
+		fi; \
+	else \
+		echo "No smoke-relevant changes detected; skipping UI smoke lanes."; \
+	fi; \
 	$(MAKE) check-smoke-proof
 
 # Validate agent-facing rules and skills after guidance changes.
