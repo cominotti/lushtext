@@ -102,7 +102,11 @@ pre-commit hook, CI, and contributor docs:
 - `make verify-local-fast` and `make verify-local` — full local CI parity
   (default-feature bin check, strict `rustdoc` gate, `cargo bench --no-run`,
   `cargo deny`, unit/integration/property tests, fuzz corpus replay, conditional
-  GTK Lush checks, and `check-smoke-proof`);
+  GTK Lush checks, and `check-smoke-proof`; setting `GATE_TREES_CHANGE=<C>` and
+  `VERIFY_RUN_SMOKES=1` runs `make check`, `make test`, and `make smoke-ui`
+  once each and records all canonical gate names in one pass);
+- `make check-policy-docs` — pure-script subset of `check-policy` (zero Cargo
+  compilation) shared by `make pre-commit-docs` and CI `Lint (Docs-only)`;
 - `make smoke-ui` — single pre-build + parallel execution (`SMOKE_PARALLEL=1`,
   `0` for serial) of `accessibility-smoke`, `visual-smoke`, and
   `visual-geometry-smoke` (with optional `GATE_TREES_CHANGE=<change>` to record
@@ -112,21 +116,23 @@ pre-commit hook, CI, and contributor docs:
 
 `make check` runs rustfmt (`make check-fmt`, which also covers the widget test
 modules), all-feature Clippy, `make check-policy`, and records a 30-minute
-clean-worktree `git write-tree` stamp (`scripts/precommit-scope.py stamp-write`;
-dirty worktrees never get a stamp and clear stale stamps); `make pre-commit` is
-the same static gate. The repo-managed Git hooks live under `.githooks/`;
+working-tree `git write-tree` stamp via a temporary index (`scripts/precommit-scope.py
+stamp-write`, so `edit -> make check -> git add -> git commit` hits cleanly
+when all working-tree changes are staged, while partial staging or post-check
+edits fail closed; refuses `MERGE_HEAD`); `make pre-commit` is the same static
+gate. The repo-managed Git hooks live under `.githooks/`;
 install them with `make install-git-hooks`, which sets `core.hooksPath` for
 this checkout and ensures both `pre-commit` and `pre-push` are executable.
-The pre-commit hook runs `make pre-commit` (reusing the tree stamp via
-`scripts/precommit-scope.py stamp-valid` unless `MERGE_HEAD` exists, the tree
-is dirty, or `LUSHTEXT_SKIP_PRECOMMIT_STAMP=1` is set), except for a **docs-only
-commit**: when `scripts/precommit-scope.py docs-only` finds that the commit is
-not a merge and every staged path (both sides of a rename, and deletions) is
-under `docs/`, `openspec/`, `.claude/` or `.agents/`, or is a `*.md` at the
-repository root, the hook runs `make pre-commit-docs` (rustfmt and `make
-check-policy`) and skips Clippy, which no such path can affect. Anything else,
-including an empty commit, a merge, `*.md` under `crates/`, and any git error,
-runs the full gate, so the skip fails closed. `.githooks/pre-push` runs
+The pre-commit hook reuses the tree stamp first via
+`scripts/precommit-scope.py stamp-valid` (requiring a clean working tree whose
+`git write-tree` matches the stamped working-tree hash within 1800 s, zero
+untracked files, no `MERGE_HEAD`, and `LUSHTEXT_SKIP_PRECOMMIT_STAMP != 1`),
+else on a **docs-only commit** (when `scripts/precommit-scope.py docs-only` finds
+no merge and every staged path is under `docs/`, `openspec/`, `.claude/` or
+`.agents/`, or is a `*.md` at the repository root) runs `make pre-commit-docs`
+(`check-fmt` and zero-compile `check-policy-docs`, ~3 s), and otherwise runs
+`make pre-commit`. Anything else, including an empty commit, a merge, `*.md`
+under `crates/`, and any git error, runs the full gate, so the skip fails closed. `.githooks/pre-push` runs
 `make check-smoke-proof` on non-delete, non-tag pushes so smoke-relevant branch
 diffs cannot reach remote branches without fresh smokes. `make
 check-precommit-scope` (in `make check-policy`) keeps the allowlist honest: it

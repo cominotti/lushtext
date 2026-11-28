@@ -152,17 +152,43 @@ def _clean_index_tree(repo: Path) -> tuple[bool, str, str | None]:
     return True, "clean", wt.stdout.decode().strip()
 
 
+def _working_tree_hash(repo: Path) -> tuple[bool, str, str | None]:
+    """Hash all tracked and non-ignored untracked files via a throwaway index."""
+    if git(repo, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        return False, "not inside a git work tree", None
+    if git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0:
+        return False, "a merge is in progress", None
+    with tempfile.TemporaryDirectory() as tmp:
+        env = _git_env()
+        env["GIT_INDEX_FILE"] = str(Path(tmp) / "index")
+        add = subprocess.run(
+            ["git", "-C", str(repo), "add", "-A"],
+            capture_output=True,
+            env=env,
+        )
+        if add.returncode != 0:
+            return False, "failed to hash working tree", None
+        wt = subprocess.run(
+            ["git", "-C", str(repo), "write-tree"],
+            capture_output=True,
+            env=env,
+        )
+        if wt.returncode != 0:
+            return False, "git write-tree failed on working tree", None
+    return True, "hashed", wt.stdout.decode().strip()
+
+
 def stamp_write(repo: Path) -> tuple[bool, str]:
     try:
         sp = stamp_path(repo)
     except RuntimeError as exc:
         return False, str(exc)
-    ok, why, tree_sha = _clean_index_tree(repo)
+    ok, why, tree_sha = _working_tree_hash(repo)
     if not ok or tree_sha is None:
         _remove_stamp(sp)
         return False, f"no stamp written ({why})"
     sp.write_text(f"{tree_sha}\t{int(time.time())}\n", encoding="utf-8")
-    return True, f"stamped tree {tree_sha[:12]}"
+    return True, f"stamped working tree {tree_sha[:12]}"
 
 
 def stamp_valid(repo: Path, now: int | None = None) -> tuple[bool, str]:
@@ -494,23 +520,37 @@ def self_test() -> None:
         ).stdout.strip()
         assert not docs_only_range(rename_repo, r_base, r_head)[0]
 
-        # Stamp lifecycle: clean hit, dirty write refusal, unstaged/untracked/staged/expired/MERGE_HEAD/env bypass.
+        # Stamp lifecycle: edit -> stamp-write -> git add -> stamp-valid HITS;
+        # poison attack & partial staging MISS; expired/MERGE_HEAD/env bypass MISS.
         stamp_repo = fresh(scratch, "stamp")
         (stamp_repo / "crates/c/src/lib.rs").write_text("pub fn a() {}\n")
-        run(stamp_repo, "add", "crates/c/src/lib.rs")
         wrote, why_write = stamp_write(stamp_repo)
-        assert wrote, f"clean staged stamp_write failed: {why_write}"
+        assert wrote, f"working-tree stamp_write before git add failed: {why_write}"
+        # Still unstaged -> stamp_valid MUST refuse.
+        assert not stamp_valid(stamp_repo)[0], "unstaged edits matched stamp before git add"
+        run(stamp_repo, "add", "crates/c/src/lib.rs")
         valid, why_valid = stamp_valid(stamp_repo)
-        assert valid, f"clean stamp_valid failed: {why_valid}"
+        assert valid, f"edit -> stamp_write -> git add -> stamp_valid missed: {why_valid}"
 
-        # Staged A, dirty B -> stamp_write MUST refuse and delete stale stamp; checkout -- B must NOT reuse stale stamp for A.
-        (stamp_repo / "crates/c/src/lib.rs").write_text("pub fn dirty_b() {}\n")
-        wrote_dirty, _ = stamp_write(stamp_repo)
-        assert not wrote_dirty, "stamp_write wrote a stamp on a dirty worktree"
-        run(stamp_repo, "checkout", "--", "crates/c/src/lib.rs")
-        assert not stamp_valid(stamp_repo)[0], "stale stamp survived dirty stamp_write"
+        # Partial staging: edit A & B -> stamp_write -> add only A -> MUST miss.
+        (stamp_repo / "crates/c/src/lib.rs").write_text("pub fn part_a() {}\n")
+        (stamp_repo / "README.md").write_text("part b\n")
+        assert stamp_write(stamp_repo)[0]
+        run(stamp_repo, "add", "crates/c/src/lib.rs")
+        assert not stamp_valid(stamp_repo)[0], "partial stage matched working-tree stamp"
 
-        # Re-stamp clean, then test invalidation conditions.
+        # Poisoning attack: stage A -> dirty B -> stamp_write -> checkout -- B -> commit A MUST miss!
+        run(stamp_repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "a")
+        run(stamp_repo, "checkout", "--", "README.md")
+        (stamp_repo / "crates/c/src/lib.rs").write_text("pub fn staged_a() {}\n")
+        run(stamp_repo, "add", "crates/c/src/lib.rs")
+        (stamp_repo / "README.md").write_text("dirty b\n")
+        assert stamp_write(stamp_repo)[0]
+        run(stamp_repo, "checkout", "--", "README.md")
+        assert not stamp_valid(stamp_repo)[0], "poisoned stamp matched after reverting B"
+
+        # Clean tree stamp hit + invalidation conditions.
+        run(stamp_repo, "add", "crates/c/src/lib.rs")
         assert stamp_write(stamp_repo)[0]
         assert stamp_valid(stamp_repo)[0]
         (stamp_repo / "crates/c/src/lib.rs").write_text("pub fn unstaged() {}\n")

@@ -4,22 +4,22 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# Clean worktree whose staged index tree already matches a working-tree stamp
+# from `make check` within TTL skips redundant Clippy + policy checks.
+if [[ -x ./scripts/precommit-scope.py ]] && ./scripts/precommit-scope.py stamp-valid; then
+    echo "Pre-commit: clean tree matches recent make check stamp; skipping redundant Clippy"
+    exit 0
+fi
+
 # A docs-only commit (every staged path on the allowlist of
-# scripts/precommit-scope.py, no merge) skips only Clippy: no allowlisted path
+# scripts/precommit-scope.py, no merge) skips Clippy: no allowlisted path
 # is a Rust build input (`make check-precommit-scope`). Anything else, an empty
 # commit, and any doubt run the full gate. core.hooksPath names the main
 # checkout's .githooks, so this hook also runs in worktrees whose branch
 # predates the classifier: without it there, the full gate runs.
 if [[ -x ./scripts/precommit-scope.py ]] && ./scripts/precommit-scope.py docs-only; then
-    echo "Docs-only commit: rustfmt + policy audits (Clippy skipped: no Rust build input staged)"
+    echo "Docs-only commit: rustfmt + zero-compile policy audits (Clippy skipped: no Rust build input staged)"
     exec make pre-commit-docs
-fi
-
-# Clean worktree whose staged index tree already passed `make check` within TTL
-# skips redundant Clippy + policy checks.
-if [[ -x ./scripts/precommit-scope.py ]] && ./scripts/precommit-scope.py stamp-valid; then
-    echo "Pre-commit: clean tree matches recent make check stamp; skipping redundant Clippy"
-    exit 0
 fi
 
 echo "Running LushText pre-commit checks (rustfmt + all-feature Clippy + policy audits)..."

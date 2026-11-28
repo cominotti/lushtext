@@ -443,7 +443,7 @@ Authorized `/goal` and agent workflows MAY merge under `MERGE-LOCK` on local `ga
 - **THEN** the PR merges without the archive commit and the archive follows under a second `MERGE-LOCK` hold once Kani finishes
 
 ### Requirement: Pre-commit caches clean checks by tree hash while pre-push enforces smoke proofs
-`.githooks/pre-commit` SHALL run `make pre-commit-docs` on docs-only staged diffs and MAY skip redundant Clippy when `scripts/precommit-scope.py stamp-valid` matches a clean working tree against `git write-tree` within 1800 seconds. `stamp-write` SHALL write a stamp only when no unstaged edits, untracked files, or `MERGE_HEAD` exist. `.githooks/pre-push` SHALL run `make check-smoke-proof` against `origin/main...HEAD`.
+`.githooks/pre-commit` SHALL reuse `scripts/precommit-scope.py stamp-valid` when the clean staged `git write-tree` matches the 1800 s working-tree stamp written by `stamp-write` (hashing all tracked/unignored files via a temporary index and refusing `MERGE_HEAD`), else run `make pre-commit-docs` on docs-only diffs or `make pre-commit`. `.githooks/pre-push` SHALL run `make check-smoke-proof`.
 
 #### Scenario: Stamped clean tree skips redundant Clippy on commit
 - **WHEN** `make check` succeeded on the exact `git write-tree` within 1800 seconds, no unstaged or untracked files exist, and `MERGE_HEAD` is absent

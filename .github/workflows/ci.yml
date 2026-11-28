@@ -61,17 +61,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Run docs-only policy audits
-        run: |
-          make check-workflow-scripts
-          make check-agent-docs
-          make check-agent-skills
-          make check-workflow-timeouts
-          make check-flatpak-ci-builds
-          make check-precommit-scope
-          make check-python-hygiene
-          make check-accessibility-policy
-          make check-automation-docs
-          make check-end-user-smoke-workflow
+        run: make check-policy-docs
 
   lint:
     name: Lint

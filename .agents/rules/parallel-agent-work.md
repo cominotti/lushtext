@@ -232,8 +232,9 @@ Change worktrees live in `.claude/worktrees/<change>`.
   figures (or changes whose `tasks.md` states `Kani: none`), sync delta specs
   and archive the OpenSpec change (`openspec-archive-change`) directly on the PR
   branch as a docs-only commit *after* final code review fixes and *before* the
-  single final `make smoke-ui` + `make verify-local` gate pass recorded on that
-  exact post-archive `HEAD^{tree}`. That eliminates a separate post-merge
+  single final `make verify-local VERIFY_RUN_SMOKES=1 GATE_TREES_CHANGE=<change>`
+  gate pass recorded on that exact post-archive `HEAD^{tree}` (or omit
+  `VERIFY_RUN_SMOKES=1` when no smoke-relevant paths changed). That eliminates a separate post-merge
   archive PR and its CI cycle while preserving the exact-tree gate invariant
   (skip step 4 below when the archive is already in the PR branch).
   (`programme-change.js` always keeps its stage-4 post-merge archive path.)

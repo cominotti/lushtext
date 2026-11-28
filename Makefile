@@ -102,7 +102,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug build-fast run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-pkg test-fast test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states build-cache-prune build-cache-status check-build-cache-helpers check-rustc-frontend-threads check-precommit-scope pre-commit-docs automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke smoke-ui check-smoke-proof verify-local verify-local-fast performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers check-workflow-scripts mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
+.PHONY: fmt build build-debug build-fast run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-pkg test-fast test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states build-cache-prune build-cache-status check-build-cache-helpers check-rustc-frontend-threads check-precommit-scope check-policy-docs pre-commit-docs automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke smoke-ui check-smoke-proof verify-local verify-local-fast performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers check-workflow-scripts mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
        check-fmt check-clippy clippy-pkg check-pkg check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-session-hygiene check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-python-hygiene check-gtk-lush-policy check-cargo-public-api-install check-terminology check-kill-point-gating check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources update-deps-cooldown verify-flatpak-identity test-flatpak-identity-verifier test-flatpak-install-origin check-flatpak-source-tree test-dev-desktop-staging \
@@ -1235,6 +1235,9 @@ gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
 check-policy: check-filesystem-boundary check-hexagonal-boundaries check-domain-value-types check-error-contracts check-idiomatic-state check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-python-hygiene check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
 
+# Pure-script subset of check-policy (zero Cargo builds) for docs-only hooks and CI.
+check-policy-docs: check-workflow-scripts check-agent-docs check-agent-skills check-workflow-timeouts check-flatpak-ci-builds check-precommit-scope check-python-hygiene check-accessibility-policy check-automation-docs check-end-user-smoke-workflow check-workflow-boundaries check-gtk-axioms check-gtk-lush-policy gtk-lush-adoption-matrix
+
 # Hexagonal crate boundaries and 1,000-line file-size ratchet.
 check-hexagonal-boundaries:
 	@echo "Checking hexagonal crate boundaries..."
@@ -1290,22 +1293,31 @@ sonar-local:
 pre-commit: check-fmt check-clippy check-policy
 
 # The pre-commit hook's gate for a docs-only commit (scripts/precommit-scope.py
-# docs-only): `pre-commit` minus Clippy, which no allowlisted path can affect
-# (`make check-precommit-scope`). `pre-commit` and `check` keep Clippy.
-pre-commit-docs: check-fmt check-policy
+# docs-only): `check-fmt` plus zero-compile `check-policy-docs` (no Clippy or
+# Cargo test builds). `pre-commit` and `check` keep Clippy and full `check-policy`.
+pre-commit-docs: check-fmt check-policy-docs
 
-# Lint + format + fast policy check, then write clean-tree pre-commit stamp.
+# Lint + format + fast policy check, then write working-tree pre-commit stamp.
 check: pre-commit
 	@if [ -x ./scripts/precommit-scope.py ]; then ./scripts/precommit-scope.py stamp-write; fi
 
 # Fast local CI-parity gate (lint, default-feature binary, strict rustdoc, bench compile).
-verify-local-fast: check
+# When GATE_TREES_CHANGE is set, records 'make check' cleanly before proceeding.
+verify-local-fast:
+	@set -eu; \
+	if [ -n "$(GATE_TREES_CHANGE)" ]; then \
+		./scripts/gate-trees.sh record . --change "$(GATE_TREES_CHANGE)" --gate 'make check' -- $(MAKE) check; \
+	else \
+		$(MAKE) check; \
+	fi
 	@echo "Running fast local CI parity checks (bins, rustdoc, bench compile)..."
 	cargo check -p lushtext --bins --locked
 	RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" cargo doc --workspace --no-deps
 	cargo bench -p lushtext-model -p lushtext-services -p lushtext-ui --features test-utils --no-run
 
 # Full local CI-parity gate on final code/archive tree.
+# With GATE_TREES_CHANGE=<C> (and optional VERIFY_RUN_SMOKES=1), executes and records
+# 'make check', 'make test', and 'make smoke-ui' once each with zero duplication.
 verify-local: verify-local-fast
 	@echo "Running full local CI parity checks..."
 	@set -eu; \
@@ -1322,7 +1334,12 @@ verify-local: verify-local-fast
 	else \
 		echo "cargo-deny not installed; skipping dependency policy (no Cargo/deny manifest diff)"; \
 	fi
-	$(MAKE) test
+	@set -eu; \
+	if [ -n "$(GATE_TREES_CHANGE)" ]; then \
+		./scripts/gate-trees.sh record . --change "$(GATE_TREES_CHANGE)" --gate 'make test' -- $(MAKE) test; \
+	else \
+		$(MAKE) test; \
+	fi
 	$(MAKE) test-prop
 	$(MAKE) fuzz-corpus-replay
 	@set -eu; \
@@ -1336,7 +1353,7 @@ verify-local: verify-local-fast
 		$(MAKE) gtk-lush-doctests gtk-lush-examples gtk-lush-adoption-lab gtk-lush-stock-fixtures; \
 	fi
 	@if [ "$(VERIFY_RUN_SMOKES)" = "1" ]; then \
-		$(MAKE) smoke-ui; \
+		$(MAKE) smoke-ui GATE_TREES_CHANGE="$(GATE_TREES_CHANGE)"; \
 	fi
 	$(MAKE) check-smoke-proof
 

@@ -82,11 +82,11 @@ git -C "$REPO" add crates/lushtext-ui/src/ui/x.rs
 git -C "$REPO" commit -q -m "feat: add x"
 grep -Fxq "pre-commit" "$LOG" || fail "unstamped code commit did not run pre-commit"
 
-# 3. Clean stamped Rust commit skips pre-commit via stamp-valid.
+# 3. Working-tree stamp (edit -> stamp-write -> git add -> commit) skips pre-commit.
 : >"$LOG"
 echo "pub fn y() {}" >"$REPO/crates/lushtext-ui/src/ui/y.rs"
-git -C "$REPO" add crates/lushtext-ui/src/ui/y.rs
 (cd "$REPO" && python3 -B ./scripts/precommit-scope.py stamp-write >/dev/null 2>&1)
+git -C "$REPO" add crates/lushtext-ui/src/ui/y.rs
 git -C "$REPO" commit -q -m "feat: add y"
 if grep -Fxq "pre-commit" "$LOG" || grep -Fxq "pre-commit-docs" "$LOG"; then
     fail "clean stamped commit unexpectedly ran make pre-commit"
@@ -155,8 +155,8 @@ if ! GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" GIT_INDEX_FILE="$DECOY/.git/in
     fail "check-accessibility-policy --self-test failed under decoy GIT_DIR"
 fi
 if ! GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" GIT_INDEX_FILE="$DECOY/.git/index" \
-    python3 -B "$REPO_ROOT/scripts/check-visual-proof-policy.py" --self-test >/dev/null 2>&1; then
-    fail "check-visual-proof-policy --self-test failed under decoy GIT_DIR"
+    python3 -B -c 'import importlib.util, sys; spec = importlib.util.spec_from_file_location("vpp", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mod.run_self_tests()' "$REPO_ROOT/scripts/check-visual-proof-policy.py" >/dev/null 2>&1; then
+    fail "check-visual-proof-policy run_self_tests failed under decoy GIT_DIR"
 fi
 if grep -Eq "bare = true|name = t" "$DECOY/.git/config"; then
     fail "self-tests leaked git config into decoy GIT_DIR"
