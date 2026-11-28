@@ -174,8 +174,12 @@ cmd_record() {
         echo "gate-trees: HEAD^{tree} changed during '$gate'; nothing recorded" >&2
     else
         mkdir -p "$(dirname "$logfile")"
-        printf '%s\ttree=%s\tresult=%s\tlog=%s\tgate=%s\n' \
-            "$(stamp)" "$tree_after" "$result" "$log_ref" "$gate" >>"$logfile"
+        (
+            exec 9>"$logfile.lock"
+            flock 9
+            printf '%s\ttree=%s\tresult=%s\tlog=%s\tgate=%s\n' \
+                "$(stamp)" "$tree_after" "$result" "$log_ref" "$gate" >>"$logfile"
+        )
         echo "gate-trees: recorded '$gate' as $result (exit $rc) on tree $tree_after"
     fi
     return "$rc"
@@ -299,8 +303,12 @@ cmd_void() {
         [ "$(field_of "$line" voids)" = "$at" ] && [ "${line##*$'\t'gate=}" = "$gate" ] \
             && [ "$(field_of "$line" tree)" = "$tree" ] && die "that fail line is already voided: $line"
     done <"$logfile"
-    printf '%s\ttree=%s\tresult=void\tlog=%s\tvoids=%s\treason=%s\tgate=%s\n' \
-        "$(stamp)" "$tree" "$evidence" "$at" "$reason" "$gate" >>"$logfile"
+    (
+        exec 9>"$logfile.lock"
+        flock 9
+        printf '%s\ttree=%s\tresult=void\tlog=%s\tvoids=%s\treason=%s\tgate=%s\n' \
+            "$(stamp)" "$tree" "$evidence" "$at" "$reason" "$gate" >>"$logfile"
+    )
     echo "gate-trees: voided the fail of '$gate' at $at on tree $tree"
 }
 

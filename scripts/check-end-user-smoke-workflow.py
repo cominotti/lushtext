@@ -16,16 +16,16 @@ MAKEFILE = REPO_ROOT / "Makefile"
 RUST_VISUAL_GEOMETRY_COMMAND = (
     'cargo run -q -p cargo-gtk-proof -- run --artifact-dir '
     '"$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir '
-    'scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"'
+    'scripts/visual-geometry-scenarios --binary "$(CURDIR)/target/debug/lushtext"'
 )
 PYTHON_ORACLE_COMMAND = (
     'cargo run -q -p cargo-gtk-proof -- run --oracle python --artifact-dir '
     '"$(SMOKE_ARTIFACT_DIR)/visual-geometry-python-oracle" --scenario-dir '
-    'scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"'
+    'scripts/visual-geometry-scenarios --binary "$(CURDIR)/target/debug/lushtext"'
 )
 EDITOR_GLYPH_COMMAND = (
     './scripts/editor-glyph-live-smoke.py --artifact-dir '
-    '"$(SMOKE_ARTIFACT_DIR)/editor-glyph-live" --binary "$(PWD)/target/debug/lushtext"'
+    '"$(SMOKE_ARTIFACT_DIR)/editor-glyph-live" --binary "$(CURDIR)/target/debug/lushtext"'
 )
 
 EXPECTED_LANES: dict[str, tuple[str, str]] = {

@@ -10,6 +10,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scope:
+    name: Change Scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only || 'false' }}
+    steps:
+      - uses: actions/checkout@v6
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+
+      - name: Classify pull request diff
+        id: classify
+        if: github.event_name == 'pull_request'
+        run: |
+          if ./scripts/precommit-scope.py docs-only-range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Always-on: validate the Snap definition WITHOUT a full build. A full build
   # cannot succeed until the GNOME 50 platform snap exists (LushText needs GTK
   # 4.22; the gnome extension currently provides only GTK 4.14), so this job must
@@ -17,6 +39,8 @@ jobs:
   # manifest and applies the extension, catching malformed definitions fast.
   validate:
     name: Validate snapcraft.yaml
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

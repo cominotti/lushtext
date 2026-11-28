@@ -75,6 +75,7 @@ struct RunConfig {
     /// The smoke-only `composition-hold` build, for first-frame-shell cases.
     composition_hold_binary: Option<PathBuf>,
     case_filter: Option<String>,
+    base_ref: Option<String>,
     mode: RunMode,
 }
 
@@ -85,6 +86,7 @@ impl RunConfig {
         let mut binary = PathBuf::from("target/debug/lushtext");
         let mut composition_hold_binary = None;
         let mut case_filter = None;
+        let mut base_ref = None;
         let mut oracle_python = false;
         let mut internal_session = false;
         let mut mutter_child = false;
@@ -112,6 +114,10 @@ impl RunConfig {
                 }
                 "--case-filter" => {
                     case_filter = Some(value_arg(args, index, "--case-filter")?.to_string());
+                    index += 2;
+                }
+                "--base-ref" => {
+                    base_ref = Some(value_arg(args, index, "--base-ref")?.to_string());
                     index += 2;
                 }
                 "--oracle" => {
@@ -161,6 +167,7 @@ impl RunConfig {
             binary,
             composition_hold_binary,
             case_filter,
+            base_ref,
             mode,
         })
     }
@@ -238,6 +245,7 @@ fn run_rust_live(config: &RunConfig) -> Result<RunOutcome, String> {
         &config.artifact_dir,
         &scenario_source,
         config.case_filter.as_deref(),
+        config.base_ref.as_deref(),
         &case_rows,
     )?;
     let failed_cases = case_rows
@@ -349,6 +357,7 @@ fn write_live_root_summary(
     artifact_dir: &Path,
     scenario_source: &artifacts::ScenarioSourceSummary,
     case_filter: Option<&str>,
+    base_ref: Option<&str>,
     cases: &[Value],
 ) -> Result<PathBuf, String> {
     let passed = cases
@@ -389,7 +398,7 @@ fn write_live_root_summary(
             .iter()
             .filter_map(|case| case.get("animation_frame_sample_count").and_then(Value::as_u64))
             .sum::<u64>(),
-        "visual_proof_policy": policy::current_visual_proof_policy_metadata()?,
+        "visual_proof_policy": policy::current_visual_proof_policy_metadata(base_ref)?,
         "engine": artifacts::EngineMetadata::rust_live(),
         "scenario_source": scenario_source,
         "artifact_root": artifacts::safe_display_path(artifact_dir),
@@ -2271,6 +2280,10 @@ fn python_oracle_args(config: &RunConfig) -> Vec<String> {
         args.push("--case-filter".to_string());
         args.push(filter.clone());
     }
+    if let Some(base_ref) = &config.base_ref {
+        args.push("--base-ref".to_string());
+        args.push(base_ref.clone());
+    }
     args
 }
 
@@ -2605,6 +2618,7 @@ mod tests {
             binary: PathBuf::from("/definitely/missing/lushtext"),
             composition_hold_binary: None,
             case_filter: Some("live-threshold".to_string()),
+            base_ref: None,
             mode: RunMode::RustLive,
         };
 
@@ -2952,8 +2966,8 @@ mod tests {
             }
         })];
 
-        let summary_path =
-            write_live_root_summary(tempdir.path(), &source, None, &cases).expect("root summary");
+        let summary_path = write_live_root_summary(tempdir.path(), &source, None, None, &cases)
+            .expect("root summary");
         let summary = read_json_value(&summary_path, "root summary").expect("summary json");
 
         assert_eq!(summary["status"], "passed");

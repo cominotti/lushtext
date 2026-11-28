@@ -23,7 +23,7 @@ a user-facing workflow unverified.
 | Fuzz smoke | `make fuzz-smoke` | Coverage-guided discovery for hostile byte and operation-script surfaces | No, scheduled or manual |
 | Widget tests | `make test-widget-headless` | Real GTK widget state, signal wiring, focus, action, and allocation contracts under Mutter, including rendered-row completeness of the virtualized workspace tree against the real window and outer scroller (`workspace_tree_virtualization`) | Yes |
 | Automation docs drift | `make check-automation-docs` | User/developer reference drift for exported actions, D-Bus members, snapshot JSON, readiness predicates/blockers, helper flags, and stable AT-SPI anchors | Yes, through `make check-policy` |
-| Visual proof policy | `make check-visual-proof-policy` | Rust-backed local worktree guard that requires a passed, unfiltered visual geometry summary matching the current visual-sensitive diff and required invariant IDs | Yes, through `make check-policy` |
+| Visual proof policy | `make check-visual-proof-policy`, `make check-smoke-proof` | Python + Rust parity self-tests (`check-policy`) and branch-level `origin/main...HEAD` visual geometry proof enforcement (`pre-push`, `verify-local`), requiring a passed unfiltered summary covering UI Rust, Blueprint/UI templates, CSS, or visual tooling | `check-visual-proof-policy` via `check-policy`; `check-smoke-proof` via `pre-push` & `verify-local` |
 | Automation client self-test | `make automation-client-self-test` | Reusable D-Bus client parser, typed action-parameter rendering, result envelope, exit statuses, and smoke artifact summary reader without a live app | Yes, through `make check-policy` |
 | Automation smoke | `make automation-smoke` | Real-process D-Bus introspection, action catalog, snapshots, reusable client commands, action-state sync, readiness waits, warning scans, and parameterized action activation under isolated Mutter | No, local, scheduled, or release validation |
 | Builder diagnostics smoke | `make builder-diagnostics-smoke` | Runtime GtkBuilder diagnostics with `GTK_DEBUG=builder,builder-objects`, standalone template validation, explicit template coverage, classifier output, and reusable debug GTK runtime metadata | No, local, scheduled, or release validation |
@@ -190,19 +190,24 @@ they are not default PR gates:
   `crates/lushtext/tests/widget/workspace_tree_virtualization.rs`; the
   accessibility lane is unaffected, because the action adds no keyboard path or
   AT-SPI anchor.
-- `make check-visual-proof-policy` is a fast Rust-backed local policy gate for agents and
-  contributors. If UI Rust, widget tests, Blueprint/UI templates, or CSS files
-  are locally changed, it requires a passing, unfiltered
-  `build/smoke/visual-geometry/summary.json` whose visual-sensitive diff
-  fingerprint still matches the current worktree and whose
+- `make check-visual-proof-policy` runs the Python + Rust visual proof policy
+  parity self-tests in `make check-policy`, while `make check-smoke-proof`
+  (enforced by `.githooks/pre-push` and `make verify-local`) checks branch-level
+  live smoke freshness across `origin/main...HEAD` unioned with working-tree
+  status: if UI Rust (`crates/lushtext-ui/src/ui/`), Blueprint/UI templates,
+  CSS, or visual smoke tooling changed on the branch (`crates/lushtext/tests/widget/`
+  excluded per Decision 7, covered by `make test-widget-headless`), it requires
+  a passing, unfiltered `build/smoke/visual-geometry/summary.json` whose
+  visual-sensitive diff fingerprint still matches the branch + worktree and whose
   `pixel_verified_invariant_ids` and `animation_verified_invariant_ids` cover
   any named invariants required by the changed files. The check does not rerun
   the compositor lane itself; it verifies that the proof artifact exists, is
-  current, includes required invariant coverage, identifies authoritative Rust
-  proof when requested, and does not count skipped visual geometry coverage as
-  verification. The compatibility script delegates command execution to
-  `cargo gtk-proof policy`; Python oracle summaries remain diagnostic and
-  non-authoritative.
+  current across staging and commits, includes required invariant coverage,
+  identifies authoritative Rust proof when requested, and does not count skipped
+  visual geometry coverage as verification. `make check-smoke-proof` invokes
+  `cargo gtk-proof policy` directly, while `scripts/check-visual-proof-policy.py`
+  remains the `--self-test` compatibility shim and importable metadata helper
+  for Python callers (Python oracle summaries remain diagnostic and non-authoritative).
 - `make automation-smoke` launches the real debug binary in a private
   headless session (`plain` profile) under headless Mutter, introspects the app-owned automation
   object, reads catalog/snapshot state, checks stateful action state against
@@ -422,11 +427,11 @@ surfaces, or smoke tooling, add the accessibility release reference:
   `build/smoke/accessibility/summary.json`, per-scenario manifests, assertion
   JSONL, AT-SPI excerpts, focus artifacts, environment reports, warning scans,
   and matrix row ids.
-- Preserve visual accessibility evidence with `make visual-geometry-smoke`,
-  `make visual-smoke`, and `make check-visual-proof-policy` when focus
-  indication, primary control visibility, color-not-only state, large text,
-  contrast, reduced motion, transparency/readability, or constrained geometry
-  can be affected.
+- Preserve visual accessibility evidence with `make smoke-ui` (or
+  `make visual-geometry-smoke` + `make visual-smoke`) and
+  `make check-smoke-proof` when focus indication, primary control visibility,
+  color-not-only state, large text, contrast, reduced motion,
+  transparency/readability, or constrained geometry can be affected.
 - Run a manual Orca check in a normal GNOME session for the changed workflows,
   especially editor text, caret or selection feedback, shell navigation,
   command palette, Open popover, workspace search, workspace sidebar/file tree,

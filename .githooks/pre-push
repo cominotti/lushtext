@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+zero_oid="0000000000000000000000000000000000000000"
+needs_check=0
+
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+    [ -z "$local_ref" ] && continue
+    [ "$local_sha" = "$zero_oid" ] && continue
+    case "$local_ref" in
+        refs/tags/*) continue ;;
+    esac
+    needs_check=1
+done
+
+if [ "$needs_check" -eq 0 ]; then
+    exit 0
+fi
+
+base_ref="${SMOKE_PROOF_BASE_REF-origin/main}"
+if ! make check-smoke-proof SMOKE_PROOF_BASE_REF="$base_ref"; then
+    echo "pre-push: UI smoke proof is missing, stale, or failed relative to '${base_ref:-<worktree>}'." >&2
+    echo "pre-push: Run 'make smoke-ui' and retry git push." >&2
+    exit 1
+fi

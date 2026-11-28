@@ -23,7 +23,6 @@ WORKSPACE_TREE_SLICE_BIN_PREFIX = "crates/gtk-lush/widgets/src/viewport_slice_bi
 VISUAL_SENSITIVE_PREFIXES = (
     "crates/cargo-gtk-proof/src/",
     "crates/lushtext-ui/src/ui/",
-    "crates/lushtext/tests/widget/",
     "resources/ui/",
     "resources/style/",
     "scripts/visual-geometry-scenarios/",
@@ -134,52 +133,90 @@ def _cli_entry_point(argv: list[str]) -> int:
     return delegate_cli_to_rust(argv)
 
 
-def run_git(args: list[str]) -> list[str]:
+def run_git_checked(args: list[str], repo_root: Path = REPO_ROOT) -> tuple[list[str], str | None]:
+    env = dict(os.environ)
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX"):
+        env.pop(var, None)
+    if repo_root.resolve() != REPO_ROOT.resolve():
+        env.pop("GIT_INDEX_FILE", None)
     result = subprocess.run(
         ["git", *args],
-        cwd=REPO_ROOT,
+        cwd=repo_root,
+        env=env,
         check=False,
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        return []
-    return [line.rstrip() for line in result.stdout.splitlines() if line.strip()]
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        return [], f"git {args!r} failed: {detail}"
+    return [line.rstrip() for line in result.stdout.splitlines() if line.strip()], None
 
 
-def status_changed_files() -> list[str]:
+def run_git(args: list[str], repo_root: Path = REPO_ROOT) -> list[str]:
+    lines, error = run_git_checked(args, repo_root)
+    return [] if error else lines
+
+
+def status_changed_files(repo_root: Path = REPO_ROOT) -> list[str]:
+    lines, error = run_git_checked(
+        ["status", "--porcelain=v1", "--untracked-files=all"], repo_root
+    )
+    if error:
+        raise RuntimeError(error)
     files: list[str] = []
-    for line in run_git(["status", "--porcelain=v1", "--untracked-files=all"]):
+    for line in lines:
         path = line[3:]
         if " -> " in path:
-            _old, path = path.split(" -> ", 1)
-        if path:
+            old, new = path.split(" -> ", 1)
+            if old:
+                files.append(old)
+            if new:
+                files.append(new)
+        elif path:
             files.append(path)
     return sorted(set(files))
 
 
-def base_ref_changed_files(base_ref: str) -> list[str]:
-    files = run_git(["diff", "--name-only", f"{base_ref}...HEAD"])
-    if files:
-        return sorted(set(files))
-    files = run_git(["diff", "--name-only", base_ref, "HEAD"])
+def base_ref_changed_files(base_ref: str, repo_root: Path = REPO_ROOT) -> list[str]:
+    _, verify_err = run_git_checked(
+        ["rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}"], repo_root
+    )
+    if verify_err:
+        raise RuntimeError(f"Visual proof policy failed: base ref '{base_ref}' could not be resolved.")
+    _, mb_err = run_git_checked(["merge-base", base_ref, "HEAD"], repo_root)
+    if mb_err is None:
+        files, diff_err = run_git_checked(
+            ["diff", "--name-only", "--no-renames", f"{base_ref}...HEAD"], repo_root
+        )
+    else:
+        files, diff_err = run_git_checked(
+            ["diff", "--name-only", "--no-renames", base_ref, "HEAD"], repo_root
+        )
+    if diff_err:
+        raise RuntimeError(diff_err)
     return sorted(set(files))
 
 
-def changed_files(base_ref: str | None) -> list[str]:
+def _changed_files_for_root(base_ref: str | None, repo_root: Path) -> list[str]:
+    working = set(status_changed_files(repo_root))
     if base_ref:
-        files = base_ref_changed_files(base_ref)
-        if files:
-            return files
+        return sorted(working | set(base_ref_changed_files(base_ref, repo_root)))
 
     github_base = os.environ.get("GITHUB_BASE_REF")
     if github_base:
         for candidate in (f"origin/{github_base}", github_base):
-            files = base_ref_changed_files(candidate)
-            if files:
-                return files
+            _, err = run_git_checked(
+                ["rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"], repo_root
+            )
+            if err is None:
+                return sorted(working | set(base_ref_changed_files(candidate, repo_root)))
 
-    return status_changed_files()
+    return sorted(working)
+
+
+def changed_files(base_ref: str | None) -> list[str]:
+    return _changed_files_for_root(base_ref, REPO_ROOT)
 
 
 def is_visual_sensitive(path: str) -> bool:
@@ -287,10 +324,10 @@ def workspace_sidebar_animation_matrix_required(paths: list[str]) -> bool:
     )
 
 
-def visual_change_fingerprint(paths: list[str]) -> dict[str, object]:
+def visual_change_fingerprint(paths: list[str], repo_root: Path = REPO_ROOT) -> dict[str, object]:
     entries = []
     for path in sorted(set(path.replace("\\", "/") for path in paths)):
-        absolute = REPO_ROOT / path
+        absolute = repo_root / path
         entry: dict[str, object] = {"path": path}
         try:
             if absolute.is_file():
@@ -614,7 +651,10 @@ def case_has_actionable_animation_evidence(case: dict[str, object]) -> bool:
 
 
 def check_policy(artifact_dir: Path, base_ref: str | None) -> tuple[bool, str]:
-    changed = changed_files(base_ref)
+    try:
+        changed = changed_files(base_ref)
+    except RuntimeError as exc:
+        return False, str(exc)
     visual_changes = [path for path in changed if is_visual_sensitive(path)]
     if not visual_changes:
         return True, "No local visual-sensitive changes require visual geometry proof."
@@ -679,6 +719,57 @@ def run_self_tests() -> None:
     assert is_visual_sensitive("scripts/visual-geometry-smoke.py")
     assert is_visual_sensitive("crates/cargo-gtk-proof/src/live.rs")
     assert not is_visual_sensitive("docs/automation.md")
+    assert not is_visual_sensitive("crates/lushtext/tests/widget/window.rs"), (
+        "widget tests must be excluded from visual-geometry smoke triggers (Decision 7)"
+    )
+    # Failing-first digest invariance across commit under base_ref.
+    saved_git_env = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("GIT_")}
+    os.environ["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+    try:
+        with tempfile.TemporaryDirectory() as git_tmp:
+            repo = Path(git_tmp) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            for k, v in (("user.name", "t"), ("user.email", "t@example.invalid"), ("commit.gpgsign", "false")):
+                subprocess.run(["git", "-C", str(repo), "config", k, v], check=True)
+            (repo / "resources/ui").mkdir(parents=True)
+            (repo / "resources/ui/a.blp").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "base"], check=True)
+            base_sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+            (repo / "resources/ui/a.blp").write_text("edited\n", encoding="utf-8")
+            dirty_files = [
+                p for p in _changed_files_for_root(base_sha, repo)
+                if is_visual_sensitive(p)
+            ]
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "ui"], check=True)
+            clean_files = [
+                p for p in _changed_files_for_root(base_sha, repo)
+                if is_visual_sensitive(p)
+            ]
+            assert dirty_files == ["resources/ui/a.blp"], f"dirty union missed file: {dirty_files}"
+            assert clean_files == dirty_files, f"changed_files changed across commit: {dirty_files} vs {clean_files}"
+            try:
+                _changed_files_for_root("refs/heads/does-not-exist", repo)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("unresolvable --base-ref must fail closed")
+            (repo / "docs").mkdir(exist_ok=True)
+            subprocess.run(["git", "-C", str(repo), "mv", "resources/ui/a.blp", "docs/a.blp"], check=True)
+            moved_dirty = [
+                p for p in _changed_files_for_root(base_sha, repo)
+                if is_visual_sensitive(p)
+            ]
+            assert "resources/ui/a.blp" in moved_dirty, (
+                f"renaming a visual file out of ui/ must still trigger visual proof: {moved_dirty}"
+            )
+    finally:
+        for k in list(os.environ):
+            if k.startswith("GIT_"):
+                os.environ.pop(k, None)
+        os.environ.update(saved_git_env)
     assert required_invariants_for_changes(["resources/style/style.css"]) == [
         NATIVE_MINIMAP_HIGHLIGHT_INVARIANT
     ]

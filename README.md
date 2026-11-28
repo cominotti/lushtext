@@ -526,13 +526,17 @@ a Silverblue host unless `LUSHTEXT_DEV_TOOLS_ALLOW_RPM_OSTREE=1` is set.
 ### Common Developer Commands
 
 ```sh
-make build       # Release build
-make build-debug # Debug build
-make run         # Debug build + fresh GNOME desktop staging
-make test        # Unit + integration + widget tests
-make fmt         # Apply rustfmt everywhere, including widget tests cargo fmt cannot reach
-make check       # fmt + all-feature Clippy + fast policy audits
-make pre-commit  # repo pre-commit gate
+make build             # Release build
+make build-debug       # Debug build
+make run               # Debug build + fresh GNOME desktop staging
+make test              # Unit + integration + widget tests
+make fmt               # Apply rustfmt everywhere, including widget tests cargo fmt cannot reach
+make check             # fmt + all-feature Clippy + fast policy audits (+ clean-tree stamp)
+make pre-commit        # repo static pre-commit gate
+make smoke-ui          # Pre-build once + run accessibility, visual, and visual-geometry smokes
+make check-smoke-proof # Verify branch-level live smoke freshness (origin/main...HEAD)
+make verify-local-fast # check + bins check + strict rustdoc + bench --no-run
+make verify-local      # Full local CI parity (adds deny, tests, props, fuzz replay, smoke proof)
 make install-git-hooks
 ```
 
@@ -541,9 +545,13 @@ the freshly built debug binary. If the existing app refuses to close, the
 launcher fails instead of activating stale code.
 
 Run `make install-git-hooks` once per checkout to configure the repo-managed
-hooks in `.githooks/`. The pre-commit hook runs `make pre-commit`, except that a
-commit touching only documentation (`docs/`, `openspec/`, `.claude/`,
-`.agents/`, root `*.md`) skips the Clippy step; `make check` always runs it.
+hooks in `.githooks/`. `.githooks/pre-commit` runs `make pre-commit` (reusing a
+30-minute clean-worktree `git write-tree` stamp when `make check` already
+passed on that exact tree), except that a commit touching only documentation
+(`docs/`, `openspec/`, `.claude/`, `.agents/`, root `*.md`) skips the Clippy
+step (`make pre-commit-docs`). `.githooks/pre-push` runs `make check-smoke-proof`
+so UI branches cannot be pushed without fresh smokes (`make smoke-ui`);
+`make check` always runs the full static gate.
 
 Local mutation runs (`make mutants-smoke|diff|full`), the proof-strength
 worktree and the Flatpak builder state keep their build trees outside the

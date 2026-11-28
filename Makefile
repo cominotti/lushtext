@@ -102,8 +102,8 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug build-fast run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-pkg test-fast test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states build-cache-prune build-cache-status check-build-cache-helpers check-rustc-frontend-threads check-precommit-scope pre-commit-docs automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers check-workflow-scripts mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
-       check-fmt check-clippy clippy-pkg check-pkg check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-session-hygiene check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-cargo-public-api-install check-terminology check-kill-point-gating check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+.PHONY: fmt build build-debug build-fast run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-pkg test-fast test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states build-cache-prune build-cache-status check-build-cache-helpers check-rustc-frontend-threads check-precommit-scope pre-commit-docs automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke smoke-read-faults-build visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke smoke-ui check-smoke-proof verify-local verify-local-fast performance-smoke end-user-smoke responsiveness-build responsiveness-smoke check-responsiveness-lane check-agent-helpers check-workflow-scripts mutants-smoke mutants-diff mutants-full mutants-list composition-hold-build \
+       check-fmt check-clippy clippy-pkg check-pkg check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-session-hygiene check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-python-hygiene check-gtk-lush-policy check-cargo-public-api-install check-terminology check-kill-point-gating check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources update-deps-cooldown verify-flatpak-identity test-flatpak-identity-verifier test-flatpak-install-origin check-flatpak-source-tree test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -648,7 +648,7 @@ check-rustc-frontend-threads:
 check-build-cache-helpers:
 	@echo "Checking the build-cache helpers..."
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck -x scripts/build-cache.sh scripts/test-address-space-runner.sh scripts/rustc-passthrough.sh scripts/run-mutants.sh .githooks/pre-commit; \
+		shellcheck -x scripts/build-cache.sh scripts/test-address-space-runner.sh scripts/rustc-passthrough.sh scripts/run-mutants.sh scripts/test-git-hooks.sh .githooks/pre-commit .githooks/pre-push; \
 	else \
 		echo "shellcheck not installed; skipping the lint half"; \
 	fi
@@ -660,10 +660,12 @@ check-build-cache-helpers:
 	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/proof-strength.py --self-test
 	./scripts/run-mutants.sh --self-test
 
-# No Rust build input is on the docs-only commit allowlist (.githooks/pre-commit).
+# No Rust build input is on the docs-only commit allowlist (.githooks/pre-commit),
+# and both git hooks (.githooks/pre-commit and .githooks/pre-push) pass isolated scratch-repo tests.
 check-precommit-scope:
-	@echo "Checking the docs-only pre-commit allowlist against Rust build inputs..."
+	@echo "Checking the docs-only pre-commit allowlist and git hooks..."
 	PYTHONDONTWRITEBYTECODE=1 python3 -B ./scripts/precommit-scope.py check-includes
+	./scripts/test-git-hooks.sh
 
 # Remove build-cache directories of missing checkouts and temporary flatpak-builder/build trees.
 build-cache-prune:
@@ -758,7 +760,7 @@ command-palette-notes-smoke: build-debug
 visual-smoke: build-debug smoke-read-faults-build
 	@echo "Running visual smoke lane..."
 	$(TEMP_SCOPE) visual -- ./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual" \
-		--read-fault-binary "$(PWD)/target/smoke-read-faults/debug/lushtext"
+		--read-fault-binary "$(CURDIR)/target/smoke-read-faults/debug/lushtext"
 
 # Smoke debug binaries share one isolated target directory and omit DWARF
 # debuginfo by default (SMOKE_PROFILE_DEBUG=0) so GTK dependencies compile once
@@ -784,17 +786,21 @@ composition-hold-build:
 
 visual-geometry-smoke: build-debug composition-hold-build
 	@echo "Running same-session visual geometry invariant lane..."
-	$(TEMP_SCOPE) vg -- cargo run -q -p cargo-gtk-proof -- run --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext" --composition-hold-binary "$(PWD)/target/composition-hold/debug/lushtext"
+	@base_flag=""; \
+	if [ -n "$(SMOKE_PROOF_BASE_REF)" ]; then \
+		base_flag="--base-ref $(SMOKE_PROOF_BASE_REF)"; \
+	fi; \
+	$(TEMP_SCOPE) vg -- cargo run -q -p cargo-gtk-proof -- run --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir scripts/visual-geometry-scenarios --binary "$(CURDIR)/target/debug/lushtext" --composition-hold-binary "$(CURDIR)/target/composition-hold/debug/lushtext" $$base_flag
 
 visual-geometry-oracle-smoke: build-debug
 	@echo "Running Python visual geometry oracle diagnostics..."
-	$(TEMP_SCOPE) vg-oracle -- cargo run -q -p cargo-gtk-proof -- run --oracle python --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry-python-oracle" --scenario-dir scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"
+	$(TEMP_SCOPE) vg-oracle -- cargo run -q -p cargo-gtk-proof -- run --oracle python --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry-python-oracle" --scenario-dir scripts/visual-geometry-scenarios --binary "$(CURDIR)/target/debug/lushtext"
 
 # Exact live-typing repro for active-line bracket clipping. This uses Xvfb and
 # key events so it catches the bug before Enter/focus changes can repair pixels.
 editor-glyph-live-smoke: build-debug
 	@echo "Running editor glyph live typing smoke lane..."
-	./scripts/editor-glyph-live-smoke.py --artifact-dir "$(SMOKE_ARTIFACT_DIR)/editor-glyph-live" --binary "$(PWD)/target/debug/lushtext"
+	./scripts/editor-glyph-live-smoke.py --artifact-dir "$(SMOKE_ARTIFACT_DIR)/editor-glyph-live" --binary "$(CURDIR)/target/debug/lushtext"
 
 # Real-process crash/restart smoke under isolated headless Mutter. This lane
 # creates draft/session recovery state through the app, SIGKILLs the process,
@@ -812,7 +818,7 @@ crash-recovery-smoke: build-debug
 	install -Dm755 "$(SMOKE_TARGET_DIR)/debug/lushtext" "target/crash-kill-points/debug/lushtext"
 	@echo "Running crash recovery smoke lane..."
 	$(TEMP_SCOPE) crash-recovery -- ./scripts/run-crash-recovery-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/crash-recovery" \
-		--kill-point-binary "$(PWD)/target/crash-kill-points/debug/lushtext"
+		--kill-point-binary "$(CURDIR)/target/crash-kill-points/debug/lushtext"
 
 # Confined runtime smoke for available Flatpak/Snap paths. This records runtime
 # identity and skips clearly when neither confined runtime is installed.
@@ -825,7 +831,7 @@ portal-sandbox-smoke:
 accessibility-smoke: build-debug smoke-read-faults-build
 	@echo "Running accessibility smoke lane..."
 	$(TEMP_SCOPE) accessibility -- ./scripts/run-accessibility-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/accessibility" \
-		--read-fault-binary "$(PWD)/target/smoke-read-faults/debug/lushtext"
+		--read-fault-binary "$(CURDIR)/target/smoke-read-faults/debug/lushtext"
 
 # The failed-load captures of the visual and accessibility lanes need a second
 # debug binary with the smoke-read-faults feature (services::read_fault), so a
@@ -848,6 +854,49 @@ smoke-read-faults-build:
 
 BENCH_REPORT_OUT_DIR ?= docs/benchmarks
 SMOKE_ARTIFACT_DIR ?= build/smoke
+SMOKE_PROOF_BASE_REF ?= origin/main
+SMOKE_PARALLEL ?= 1
+GATE_TREES_CHANGE ?=
+VERIFY_RUN_SMOKES ?= 0
+VERIFY_ALL_GTK_LUSH ?= 0
+
+# Run all three UI smoke lanes (accessibility, visual, visual-geometry) after one
+# shared binary build, in parallel by default (SMOKE_PARALLEL=0 runs serially).
+# When GATE_TREES_CHANGE is set, record each lane under its canonical gate string.
+smoke-ui: build-debug smoke-read-faults-build composition-hold-build
+	@echo "Building cargo-gtk-proof for smoke-ui..."
+	cargo build -q -p cargo-gtk-proof
+	@set -eu; \
+	base_flag=""; \
+	if [ -n "$(SMOKE_PROOF_BASE_REF)" ]; then \
+		base_flag="--base-ref $(SMOKE_PROOF_BASE_REF)"; \
+	fi; \
+	run_lane() { \
+		gate="$$1"; shift; \
+		if [ -n "$(GATE_TREES_CHANGE)" ]; then \
+			./scripts/gate-trees.sh record . --change "$(GATE_TREES_CHANGE)" --gate "$$gate" -- "$$@"; \
+		else \
+			"$$@"; \
+		fi; \
+	}; \
+	if [ "$(SMOKE_PARALLEL)" = "1" ]; then \
+		echo "Running UI smoke lanes in parallel (accessibility, visual, visual-geometry)..."; \
+		p1=""; p2=""; p3=""; \
+		trap 'kill -TERM "$$p1" "$$p2" "$$p3" 2>/dev/null || true' INT TERM; \
+		run_lane 'make accessibility-smoke' $(TEMP_SCOPE) accessibility -- ./scripts/run-accessibility-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/accessibility" --read-fault-binary "$(CURDIR)/target/smoke-read-faults/debug/lushtext" & p1=$$!; \
+		run_lane 'make visual-smoke' $(TEMP_SCOPE) visual -- ./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual" --read-fault-binary "$(CURDIR)/target/smoke-read-faults/debug/lushtext" & p2=$$!; \
+		run_lane 'make visual-geometry-smoke' $(TEMP_SCOPE) vg -- cargo run -q -p cargo-gtk-proof -- run --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir scripts/visual-geometry-scenarios --binary "$(CURDIR)/target/debug/lushtext" --composition-hold-binary "$(CURDIR)/target/composition-hold/debug/lushtext" $$base_flag & p3=$$!; \
+		rc=0; \
+		wait "$$p1" || { code=$$?; if [ "$$rc" -eq 0 ]; then rc=$$code; fi; }; \
+		wait "$$p2" || { code=$$?; if [ "$$rc" -eq 0 ]; then rc=$$code; fi; }; \
+		wait "$$p3" || { code=$$?; if [ "$$rc" -eq 0 ]; then rc=$$code; fi; }; \
+		exit "$$rc"; \
+	else \
+		echo "Running UI smoke lanes sequentially..."; \
+		run_lane 'make accessibility-smoke' $(TEMP_SCOPE) accessibility -- ./scripts/run-accessibility-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/accessibility" --read-fault-binary "$(CURDIR)/target/smoke-read-faults/debug/lushtext"; \
+		run_lane 'make visual-smoke' $(TEMP_SCOPE) visual -- ./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual" --read-fault-binary "$(CURDIR)/target/smoke-read-faults/debug/lushtext"; \
+		run_lane 'make visual-geometry-smoke' $(TEMP_SCOPE) vg -- cargo run -q -p cargo-gtk-proof -- run --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir scripts/visual-geometry-scenarios --binary "$(CURDIR)/target/debug/lushtext" --composition-hold-binary "$(CURDIR)/target/composition-hold/debug/lushtext" $$base_flag; \
+	fi
 
 # Lightweight performance smoke distinct from full Criterion reports.
 # PERFORMANCE_SMOKE_GROUP=search-index|io-recovery runs one half of the filter
@@ -1043,19 +1092,35 @@ check-workflow-boundaries:
 	@echo "Checking workflow readability boundaries..."
 	./scripts/check-workflow-boundaries.py --self-test
 
-# Guard new UI-sensitive lines against bypassing accessibility helper and proof conventions.
+# Guard new UI-sensitive lines against bypassing static accessibility helper and matrix conventions.
+# Live smoke freshness is enforced by `make check-smoke-proof` (pre-push, verify-local, gate-trees).
 check-accessibility-policy:
-	@echo "Checking accessibility policy..."
-	./scripts/check-accessibility-policy.py --self-test --strict-current-tree
+	@echo "Checking accessibility static policy..."
+	./scripts/check-accessibility-policy.py --self-test --strict-current-tree --static-only
 
-# Guard local UI-sensitive edits against missing same-session visual proof.
+# Guard Python/Rust visual proof policy predicate parity (self-tests only).
+# Live visual geometry proof freshness is enforced by `make check-smoke-proof`.
 check-visual-proof-policy:
-	@echo "Checking visual geometry proof policy..."
+	@echo "Checking visual geometry proof policy parity..."
 	# --self-test runs the Python predicate self-tests and then the Rust ones.
 	# Both implement the same path-keyed predicate and each asserts it separately;
 	# skipping either half leaves the two able to disagree while both exit 0.
 	./scripts/check-visual-proof-policy.py --self-test
-	cargo run -q -p cargo-gtk-proof -- policy
+
+# Branch-level smoke proof gate enforced at pre-push and verify-local (closes S7(b)).
+check-smoke-proof:
+	@echo "Checking accessibility and visual smoke proof against $(SMOKE_PROOF_BASE_REF)..."
+	@base_flag=""; \
+	if [ -n "$(SMOKE_PROOF_BASE_REF)" ]; then \
+		base_flag="--base-ref $(SMOKE_PROOF_BASE_REF)"; \
+	fi; \
+	./scripts/check-accessibility-policy.py --strict-current-tree $$base_flag && \
+	cargo run -q -p cargo-gtk-proof -- policy --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" $$base_flag
+
+# Static Python hygiene gate (syntax, bare except, duplicate dict keys, redundant regexes).
+check-python-hygiene:
+	@echo "Checking Python script hygiene..."
+	./scripts/check-python-hygiene.py --self-test
 
 # Validate the reusable agent/developer client without needing a live D-Bus app.
 automation-client-self-test:
@@ -1115,7 +1180,7 @@ gtk-lush-stock-fixtures:
 	@set -eu; \
 	for fixture in $(GTK_LUSH_STOCK_FIXTURES); do \
 		echo "Checking $$fixture..."; \
-		CARGO_TARGET_DIR="$(PWD)/target" cargo check --manifest-path "$$fixture/Cargo.toml" --locked; \
+		CARGO_TARGET_DIR="$(CURDIR)/target" cargo check --manifest-path "$$fixture/Cargo.toml" --locked; \
 	done
 
 check-gtk-lush-adoption: gtk-lush-adoption-matrix gtk-lush-adoption-lab gtk-lush-stock-fixtures
@@ -1168,7 +1233,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-hexagonal-boundaries check-domain-value-types check-error-contracts check-idiomatic-state check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
+check-policy: check-filesystem-boundary check-hexagonal-boundaries check-domain-value-types check-error-contracts check-idiomatic-state check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-python-hygiene check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
 
 # Hexagonal crate boundaries and 1,000-line file-size ratchet.
 check-hexagonal-boundaries:
@@ -1229,8 +1294,51 @@ pre-commit: check-fmt check-clippy check-policy
 # (`make check-precommit-scope`). `pre-commit` and `check` keep Clippy.
 pre-commit-docs: check-fmt check-policy
 
-# Lint + format + fast policy check
+# Lint + format + fast policy check, then write clean-tree pre-commit stamp.
 check: pre-commit
+	@if [ -x ./scripts/precommit-scope.py ]; then ./scripts/precommit-scope.py stamp-write; fi
+
+# Fast local CI-parity gate (lint, default-feature binary, strict rustdoc, bench compile).
+verify-local-fast: check
+	@echo "Running fast local CI parity checks (bins, rustdoc, bench compile)..."
+	cargo check -p lushtext --bins --locked
+	RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" cargo doc --workspace --no-deps
+	cargo bench -p lushtext-model -p lushtext-services -p lushtext-ui --features test-utils --no-run
+
+# Full local CI-parity gate on final code/archive tree.
+verify-local: verify-local-fast
+	@echo "Running full local CI parity checks..."
+	@set -eu; \
+	base_ref="$(SMOKE_PROOF_BASE_REF)"; \
+	if [ -n "$$base_ref" ]; then \
+		git rev-parse --verify --quiet "$$base_ref^{commit}" >/dev/null 2>&1 || { echo "SMOKE_PROOF_BASE_REF '$$base_ref' could not be resolved" >&2; exit 1; }; \
+	fi; \
+	if command -v cargo-deny >/dev/null 2>&1; then \
+		cargo deny check advisories bans sources licenses; \
+	elif git status --porcelain -- Cargo.toml Cargo.lock deny.toml | grep -q . || \
+	     ( [ -n "$$base_ref" ] && git diff --name-only "$$base_ref...HEAD" -- Cargo.toml Cargo.lock deny.toml | grep -q . ); then \
+		echo "cargo-deny is required because dependency manifests changed" >&2; \
+		exit 1; \
+	else \
+		echo "cargo-deny not installed; skipping dependency policy (no Cargo/deny manifest diff)"; \
+	fi
+	$(MAKE) test
+	$(MAKE) test-prop
+	$(MAKE) fuzz-corpus-replay
+	@set -eu; \
+	base_ref="$(SMOKE_PROOF_BASE_REF)"; \
+	if [ -n "$$base_ref" ]; then \
+		git rev-parse --verify --quiet "$$base_ref^{commit}" >/dev/null 2>&1 || { echo "SMOKE_PROOF_BASE_REF '$$base_ref' could not be resolved" >&2; exit 1; }; \
+	fi; \
+	if [ "$(VERIFY_ALL_GTK_LUSH)" = "1" ] || \
+	   git status --porcelain -- crates/gtk-lush crates/gtk-lush-adoption-lab fixtures/gtk-lush-adoption | grep -q . || \
+	   ( [ -n "$$base_ref" ] && git diff --name-only "$$base_ref...HEAD" -- crates/gtk-lush crates/gtk-lush-adoption-lab fixtures/gtk-lush-adoption | grep -q . ); then \
+		$(MAKE) gtk-lush-doctests gtk-lush-examples gtk-lush-adoption-lab gtk-lush-stock-fixtures; \
+	fi
+	@if [ "$(VERIFY_RUN_SMOKES)" = "1" ]; then \
+		$(MAKE) smoke-ui; \
+	fi
+	$(MAKE) check-smoke-proof
 
 # Validate agent-facing rules and skills after guidance changes.
 check-agent-docs:
@@ -1255,7 +1363,7 @@ check-automation-docs:
 install-git-hooks:
 	@echo "Configuring core.hooksPath to use .githooks..."
 	git config core.hooksPath .githooks
-	chmod +x .githooks/pre-commit
+	chmod +x .githooks/pre-commit .githooks/pre-push
 	@echo "Git hooks installed."
 
 # Prepare local development tooling, including Flatpak runtime dependencies and

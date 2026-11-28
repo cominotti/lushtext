@@ -5,8 +5,11 @@
 Design D8 of openspec/changes/archive/2026-11-15-reduce-build-disk-writes.
 
 Usage:
-  scripts/precommit-scope.py docs-only        # exit 0 only for a docs-only commit
-  scripts/precommit-scope.py check-includes   # fail when a Rust build input is allowlisted
+  scripts/precommit-scope.py docs-only                 # exit 0 only for a staged docs-only commit
+  scripts/precommit-scope.py docs-only-range BASE HEAD # exit 0 only when BASE...HEAD is non-empty and all docs
+  scripts/precommit-scope.py stamp-write               # record clean git write-tree stamp after make check
+  scripts/precommit-scope.py stamp-valid               # exit 0 only when clean tree matches recent stamp
+  scripts/precommit-scope.py check-includes            # fail when a Rust build input is allowlisted
   scripts/precommit-scope.py --self-test
 
 docs-only exits 0 only when the commit is not a merge (`MERGE_HEAD` absent),
@@ -39,12 +42,15 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ALLOWED_DIRS = ("docs", "openspec", ".claude", ".agents")
 SOURCE_ROOTS = ("crates", "fuzz", "workspace-hack")
 INCLUDE_MACROS = ("include_str", "include_bytes", "include")
+STAMP_FILENAME = "lushtext-precommit-check-stamp"
+STAMP_TTL_SECONDS = 1800
 
 
 def allowlisted(rel: str) -> bool:
@@ -58,8 +64,17 @@ def allowlisted(rel: str) -> bool:
     return "/" not in rel and rel.endswith(".md")
 
 
+def _git_env() -> dict[str, str]:
+    env = dict(os.environ)
+    # Strip repo-locating overrides so `git -C <repo>` cannot follow a decoy
+    # checkout, while keeping GIT_INDEX_FILE for partial-stage hook runs.
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_WORK_TREE", None)
+    return env
+
+
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True)
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, env=_git_env())
 
 
 def docs_only(repo: Path) -> tuple[bool, str]:
@@ -77,6 +92,104 @@ def docs_only(repo: Path) -> tuple[bool, str]:
     if outside:
         return False, f"{outside[0]} is outside the documentation allowlist"
     return True, f"{len(paths)} staged path(s), all documentation"
+
+
+def docs_only_range(repo: Path, base_ref: str, head_ref: str) -> tuple[bool, str]:
+    if not base_ref or not head_ref:
+        return False, "base and head refs are required"
+    if git(repo, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        return False, "not inside a git work tree"
+    if (
+        git(repo, "rev-parse", "-q", "--verify", f"{base_ref}^{{commit}}").returncode != 0
+        or git(repo, "rev-parse", "-q", "--verify", f"{head_ref}^{{commit}}").returncode != 0
+    ):
+        return False, "base or head commit could not be resolved"
+    diff = git(repo, "diff", "--name-only", "--no-renames", "-z", f"{base_ref}...{head_ref}")
+    if diff.returncode != 0:
+        # Shallow clones may lack a merge-base for `...`; fallback to two-dot diff only then.
+        if git(repo, "merge-base", base_ref, head_ref).returncode != 0:
+            diff = git(repo, "diff", "--name-only", "--no-renames", "-z", base_ref, head_ref)
+    if diff.returncode != 0:
+        return False, "git diff range failed: " + diff.stderr.decode(errors="replace").strip()
+    paths = [os.fsdecode(p) for p in diff.stdout.split(b"\0") if p]
+    if not paths:
+        return False, "range is empty"
+    outside = [p for p in paths if not allowlisted(p)]
+    if outside:
+        return False, f"{outside[0]} is outside the documentation allowlist"
+    return True, f"{len(paths)} changed path(s) in range, all documentation"
+
+
+def stamp_path(repo: Path) -> Path:
+    res = git(repo, "rev-parse", "--path-format=absolute", "--git-dir")
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.decode(errors="replace").strip() or "git-dir unavailable")
+    return Path(res.stdout.decode().strip()) / STAMP_FILENAME
+
+
+def _remove_stamp(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _clean_index_tree(repo: Path) -> tuple[bool, str, str | None]:
+    if git(repo, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        return False, "not inside a git work tree", None
+    if git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0:
+        return False, "a merge is in progress", None
+    if git(repo, "diff", "--quiet").returncode != 0:
+        return False, "working tree has unstaged edits", None
+    untracked = git(repo, "ls-files", "--others", "--exclude-standard", "-z")
+    if untracked.returncode != 0:
+        return False, "failed to inspect untracked files", None
+    if untracked.stdout:
+        return False, "working tree has untracked files", None
+    wt = git(repo, "write-tree")
+    if wt.returncode != 0:
+        return False, "git write-tree failed", None
+    return True, "clean", wt.stdout.decode().strip()
+
+
+def stamp_write(repo: Path) -> tuple[bool, str]:
+    try:
+        sp = stamp_path(repo)
+    except RuntimeError as exc:
+        return False, str(exc)
+    ok, why, tree_sha = _clean_index_tree(repo)
+    if not ok or tree_sha is None:
+        _remove_stamp(sp)
+        return False, f"no stamp written ({why})"
+    sp.write_text(f"{tree_sha}\t{int(time.time())}\n", encoding="utf-8")
+    return True, f"stamped tree {tree_sha[:12]}"
+
+
+def stamp_valid(repo: Path, now: int | None = None) -> tuple[bool, str]:
+    if os.environ.get("LUSHTEXT_SKIP_PRECOMMIT_STAMP") == "1":
+        return False, "LUSHTEXT_SKIP_PRECOMMIT_STAMP=1"
+    try:
+        sp = stamp_path(repo)
+    except RuntimeError as exc:
+        return False, str(exc)
+    ok, why, tree_sha = _clean_index_tree(repo)
+    if not ok or tree_sha is None:
+        return False, why
+    if not sp.is_file():
+        return False, "no pre-commit stamp found"
+    try:
+        raw = sp.read_text(encoding="utf-8").strip()
+        recorded_tree, recorded_epoch_str = raw.split("\t", 1)
+        recorded_epoch = int(recorded_epoch_str)
+    except (OSError, ValueError):
+        return False, "malformed pre-commit stamp"
+    if recorded_tree != tree_sha:
+        return False, "index tree changed since stamp"
+    current_time = int(time.time()) if now is None else now
+    age = current_time - recorded_epoch
+    if age < 0 or age > STAMP_TTL_SECONDS:
+        return False, f"pre-commit stamp expired (age={age}s)"
+    return True, f"matches clean tree {tree_sha[:12]} (age={age}s)"
 
 
 # --- check-includes -------------------------------------------------------------
@@ -332,6 +445,133 @@ def self_test() -> None:
     # The current tree passes.
     findings = check_includes(REPO_ROOT)
     assert not findings, findings
+
+    # Failing-first tests for docs-only-range and stamp-write / stamp-valid.
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp)
+        range_repo = fresh(scratch, "range")
+        base_sha = subprocess.run(
+            ["git", "-C", str(range_repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        (range_repo / "docs/a.md").write_text("docs only change\n")
+        run(range_repo, "add", "docs/a.md")
+        run(range_repo, "commit", "-q", "-m", "docs")
+        docs_head = subprocess.run(
+            ["git", "-C", str(range_repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        ok_range, why_range = docs_only_range(range_repo, base_sha, docs_head)
+        assert ok_range, f"docs-only range failed: {why_range}"
+
+        # Mixed commit (docs + Rust) -> False.
+        (range_repo / "crates/c/src/lib.rs").write_text("pub fn z() {}\n")
+        run(range_repo, "add", "crates/c/src/lib.rs")
+        run(range_repo, "commit", "-q", "-m", "rust")
+        mixed_head = subprocess.run(
+            ["git", "-C", str(range_repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        ok_mixed, _ = docs_only_range(range_repo, base_sha, mixed_head)
+        assert not ok_mixed, "mixed range unexpectedly passed docs_only_range"
+
+        # Empty range / invalid ref -> False (fail-closed).
+        assert not docs_only_range(range_repo, mixed_head, mixed_head)[0]
+        assert not docs_only_range(range_repo, "0" * 40, mixed_head)[0]
+
+        # Rename out of docs/ -> False.
+        rename_repo = fresh(scratch, "rename")
+        r_base = subprocess.run(
+            ["git", "-C", str(rename_repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        (rename_repo / "docs/a.md").rename(rename_repo / "crates/moved.md")
+        run(rename_repo, "add", "-A")
+        run(rename_repo, "commit", "-q", "-m", "rename out")
+        r_head = subprocess.run(
+            ["git", "-C", str(rename_repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert not docs_only_range(rename_repo, r_base, r_head)[0]
+
+        # Stamp lifecycle: clean hit, dirty write refusal, unstaged/untracked/staged/expired/MERGE_HEAD/env bypass.
+        stamp_repo = fresh(scratch, "stamp")
+        (stamp_repo / "crates/c/src/lib.rs").write_text("pub fn a() {}\n")
+        run(stamp_repo, "add", "crates/c/src/lib.rs")
+        wrote, why_write = stamp_write(stamp_repo)
+        assert wrote, f"clean staged stamp_write failed: {why_write}"
+        valid, why_valid = stamp_valid(stamp_repo)
+        assert valid, f"clean stamp_valid failed: {why_valid}"
+
+        # Staged A, dirty B -> stamp_write MUST refuse and delete stale stamp; checkout -- B must NOT reuse stale stamp for A.
+        (stamp_repo / "crates/c/src/lib.rs").write_text("pub fn dirty_b() {}\n")
+        wrote_dirty, _ = stamp_write(stamp_repo)
+        assert not wrote_dirty, "stamp_write wrote a stamp on a dirty worktree"
+        run(stamp_repo, "checkout", "--", "crates/c/src/lib.rs")
+        assert not stamp_valid(stamp_repo)[0], "stale stamp survived dirty stamp_write"
+
+        # Re-stamp clean, then test invalidation conditions.
+        assert stamp_write(stamp_repo)[0]
+        assert stamp_valid(stamp_repo)[0]
+        (stamp_repo / "crates/c/src/lib.rs").write_text("pub fn unstaged() {}\n")
+        assert not stamp_valid(stamp_repo)[0], "unstaged edit did not invalidate stamp"
+        run(stamp_repo, "checkout", "--", "crates/c/src/lib.rs")
+        assert stamp_valid(stamp_repo)[0]
+
+        (stamp_repo / "untracked.txt").write_text("x\n")
+        assert not stamp_valid(stamp_repo)[0], "untracked file did not invalidate stamp"
+        (stamp_repo / "untracked.txt").unlink()
+        assert stamp_valid(stamp_repo)[0]
+
+        (stamp_repo / "crates/c/src/lib.rs").write_text("pub fn changed_stage() {}\n")
+        run(stamp_repo, "add", "crates/c/src/lib.rs")
+        assert not stamp_valid(stamp_repo)[0], "staged content change did not invalidate stamp"
+        assert stamp_write(stamp_repo)[0]
+        assert stamp_valid(stamp_repo)[0]
+
+        # Expired timestamp (> 1800s).
+        sp = stamp_path(stamp_repo)
+        tree_sha = sp.read_text(encoding="utf-8").split("\t", 1)[0]
+        sp.write_text(f"{tree_sha}\t1\n", encoding="utf-8")
+        assert not stamp_valid(stamp_repo)[0], "expired stamp was accepted"
+        assert stamp_write(stamp_repo)[0]
+
+        # MERGE_HEAD invalidates both stamp_valid and stamp_write.
+        s_head = subprocess.run(
+            ["git", "-C", str(stamp_repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        (stamp_repo / ".git/MERGE_HEAD").write_text(s_head + "\n")
+        assert not stamp_valid(stamp_repo)[0], "MERGE_HEAD did not invalidate stamp"
+        assert not stamp_write(stamp_repo)[0], "stamp_write succeeded during merge"
+        (stamp_repo / ".git/MERGE_HEAD").unlink()
+        assert stamp_write(stamp_repo)[0]
+
+        # Env bypass.
+        os.environ["LUSHTEXT_SKIP_PRECOMMIT_STAMP"] = "1"
+        try:
+            assert not stamp_valid(stamp_repo)[0], "env skip did not invalidate stamp"
+        finally:
+            os.environ.pop("LUSHTEXT_SKIP_PRECOMMIT_STAMP", None)
+
+        # Worktree isolation: linked worktree gets its own stamp separate from main repo.
+        wt_path = scratch / "wt-linked"
+        run(stamp_repo, "worktree", "add", "-q", "-b", "wt-branch", str(wt_path))
+        assert stamp_path(wt_path) != stamp_path(stamp_repo), "linked worktree shared stamp path"
+        (wt_path / "crates/c/src/lib.rs").write_text("pub fn wt_only() {}\n")
+        run(wt_path, "add", "crates/c/src/lib.rs")
+        assert not stamp_valid(wt_path)[0], "linked worktree inherited main repo stamp"
+        assert stamp_write(wt_path)[0]
+        assert stamp_valid(wt_path)[0]
+        run(stamp_repo, "worktree", "remove", "--force", str(wt_path))
+
+        res = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "stamp-valid"],
+            cwd=stamp_repo,
+            capture_output=True,
+        )
+        assert res.returncode == 0, f"CLI stamp-valid failed: {res.stderr.decode()}"
+
     print("precommit-scope self-test: ok")
 
 
@@ -342,6 +582,18 @@ def main(argv: list[str]) -> int:
     if argv == ["docs-only"]:
         ok, why = docs_only(Path.cwd())
         print(f"precommit-scope: {'docs-only' if ok else 'full gate'}: {why}", file=sys.stderr)
+        return 0 if ok else 1
+    if len(argv) == 3 and argv[0] == "docs-only-range":
+        ok, why = docs_only_range(Path.cwd(), argv[1], argv[2])
+        print(f"precommit-scope: {'docs-only' if ok else 'full gate'}: {why}", file=sys.stderr)
+        return 0 if ok else 1
+    if argv == ["stamp-write"]:
+        ok, why = stamp_write(Path.cwd())
+        print(f"precommit-scope: {why}", file=sys.stderr)
+        return 0
+    if argv == ["stamp-valid"]:
+        ok, why = stamp_valid(Path.cwd())
+        print(f"precommit-scope: {'stamp hit' if ok else 'stamp miss'}: {why}", file=sys.stderr)
         return 0 if ok else 1
     if argv == ["check-includes"]:
         findings = check_includes(REPO_ROOT)

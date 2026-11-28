@@ -1,0 +1,6 @@
+interface:
+  display_name: "Change Delivery Workflow"
+  short_description: "Deliver OpenSpec changes with Review-Before-Smoke"
+  default_prompt: "Use $change-delivery to coordinate implementation, Review-Before-Smoke, Archive-Before-Final-Gate, make smoke-ui, make verify-local, and local-evidence merge."
+policy:
+  allow_implicit_invocation: true

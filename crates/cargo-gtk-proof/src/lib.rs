@@ -110,11 +110,13 @@ DEFAULTS:
     scenario root: scripts/visual-geometry-scenarios
 
 RUN FLAGS:
-    --artifact-dir DIR   Write visual proof artifacts to DIR
-    --scenario-dir DIR   Load visual scenario manifests from DIR
-    --binary PATH        Use PATH as the LushText binary
-    --case-filter TEXT   Run only expanded cases whose id contains TEXT
-    --oracle python      Run the legacy Python visual runner as an explicit diagnostic oracle
+    --artifact-dir DIR            Write visual proof artifacts to DIR
+    --scenario-dir DIR            Load visual scenario manifests from DIR
+    --binary PATH                 Use PATH as the LushText binary
+    --composition-hold-binary P   Use P for composition-hold scenarios
+    --base-ref REF                Record branch visual changes against REF
+    --case-filter TEXT            Run only expanded cases whose id contains TEXT
+    --oracle python               Run the legacy Python visual runner as an explicit diagnostic oracle
 
 CORPUS FLAGS:
     --parity             Compare Python-oracle and Rust fixture fields

@@ -498,7 +498,8 @@ Accessibility proof is intentionally layered:
 | Accessibility smoke | `make accessibility-smoke` | AT-SPI-visible names, roles, focus paths, editor text evidence, scenario manifests, warning scans, and unsupported-host reasons. |
 | Visual geometry smoke | `make visual-geometry-smoke` | Same-session protected regions, focus/fixed-control geometry, screenshot-derived pixel anchors, and current visual-proof policy summaries. |
 | Visual smoke | `make visual-smoke` | Rendered desktop screenshots for representative states, compact layouts, dense rows, dialogs, dark/high-contrast/large-text/reduced-motion variants, transparency/readability, and other user-visible surfaces. |
-| Policy checks | `make check-accessibility-policy`, `make check-visual-proof-policy`, `make check-automation-docs` | Drift checks for helper use, stable AT-SPI anchors, smoke helper flags, automation docs, and current visual evidence. |
+| Policy checks | `make check-accessibility-policy`, `make check-visual-proof-policy`, `make check-smoke-proof`, `make check-automation-docs` | Static helper/anchor/parity audits (`check-policy`), branch-level smoke freshness (`make check-smoke-proof`, enforced by `pre-push` and `verify-local`), and automation docs drift checks. |
+| Combined UI smoke pass | `make smoke-ui` | Single shared pre-build plus parallel execution (`SMOKE_PARALLEL=1`) of `accessibility-smoke`, `visual-smoke`, and `visual-geometry-smoke`. |
 | Responsiveness smoke | `make responsiveness-smoke` | Cost of the accessibility bridge itself on long-line documents: every case also runs with the AT bridge on and a `pyatspi` listener for text-changed, caret-moved and selection-changed events. It adds no anchors and asserts no accessible names; it is the evidence for ledger axiom A35. |
 
 Every scenario in the accessibility, visual, and visual-geometry lanes should
@@ -546,10 +547,10 @@ both automated and manual evidence:
 2. Run `make accessibility-smoke` on a host with AT-SPI, D-Bus, Mutter, and the
    required Python accessibility bindings. Review `summary.json` and do not
    count unsupported cases as verified coverage.
-3. Run `make visual-geometry-smoke`, `make visual-smoke`, and
-   `make check-visual-proof-policy` when the release changes focus styling,
-   row factories, transient surfaces, CSS, visual smoke tooling, or geometry
-   that affects keyboard or low-vision users.
+3. Run `make smoke-ui` (or `make visual-geometry-smoke`, `make visual-smoke`, and
+   `make accessibility-smoke`) followed by `make check-smoke-proof` when the
+   release changes focus styling, row factories, transient surfaces, CSS,
+   visual smoke tooling, or geometry that affects keyboard or low-vision users.
 4. Perform a manual Orca check in a normal GNOME session for the changed
    workflows. At minimum, verify shell navigation, editor focus, typing,
    caret/selection feedback where available, in-tab search, command palette,

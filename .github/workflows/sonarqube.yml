@@ -15,8 +15,32 @@ env:
   SONAR_USER_HOME: ${{ github.workspace }}/.sonar
 
 jobs:
+  scope:
+    name: Change Scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only || 'false' }}
+    steps:
+      - uses: actions/checkout@v6
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+
+      - name: Classify pull request diff
+        id: classify
+        if: github.event_name == 'pull_request'
+        run: |
+          if ./scripts/precommit-scope.py docs-only-range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   sonarqube:
     name: SonarQube Cloud Analysis
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:

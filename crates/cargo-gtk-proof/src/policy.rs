@@ -20,7 +20,6 @@ use crate::read_json_value;
 const VISUAL_SENSITIVE_PREFIXES: &[&str] = &[
     "crates/cargo-gtk-proof/src/",
     "crates/lushtext-ui/src/ui/",
-    "crates/lushtext/tests/widget/",
     "resources/ui/",
     "resources/style/",
     "scripts/visual-geometry-scenarios/",
@@ -130,6 +129,7 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
         || !is_visual_sensitive("scripts/check-visual-proof-policy.py")
         || !is_visual_sensitive("crates/cargo-gtk-proof/src/live.rs")
         || is_visual_sensitive("docs/automation.md")
+        || is_visual_sensitive("crates/lushtext/tests/widget/window.rs")
     {
         return Err("visual-sensitive path classification failed".to_string());
     }
@@ -374,7 +374,12 @@ pub(crate) fn check_policy(
     repo_root: Option<&Path>,
 ) -> PolicyOutcome {
     let root = repo_root.map_or_else(default_repo_root, Path::to_path_buf);
-    let changed = changed_files(base_ref, &root);
+    let changed = match changed_files(base_ref, &root) {
+        Ok(changed) => changed,
+        Err(detail) => {
+            return PolicyOutcome { ok: false, detail };
+        }
+    };
     let visual_changes: Vec<String> = changed
         .into_iter()
         .filter(|path| is_visual_sensitive(path))
@@ -438,9 +443,11 @@ pub(crate) fn check_policy(
 }
 
 /// Build the current visual-sensitive diff metadata recorded in proof summaries.
-pub(crate) fn current_visual_proof_policy_metadata() -> Result<Value, String> {
+pub(crate) fn current_visual_proof_policy_metadata(
+    base_ref: Option<&str>,
+) -> Result<Value, String> {
     let root = default_repo_root();
-    let visual_changes: Vec<String> = changed_files(None, &root)
+    let visual_changes: Vec<String> = changed_files(base_ref, &root)?
         .into_iter()
         .filter(|path| is_visual_sensitive(path))
         .collect();
@@ -1060,66 +1067,122 @@ fn hex_sha256(data: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn changed_files(base_ref: Option<&str>, root: &Path) -> Vec<String> {
-    if let Some(base_ref) = base_ref {
-        let files = base_ref_changed_files(base_ref, root);
-        if !files.is_empty() {
-            return files;
+fn changed_files(base_ref: Option<&str>, root: &Path) -> Result<Vec<String>, String> {
+    use std::collections::BTreeSet;
+
+    let working = status_changed_files(root)?;
+    if let Some(base_ref) = base_ref.filter(|value| !value.is_empty()) {
+        let mut union: BTreeSet<String> = working.into_iter().collect();
+        union.extend(base_ref_changed_files(base_ref, root)?);
+        return Ok(union.into_iter().collect());
+    }
+    if let Ok(base_ref) = std::env::var("GITHUB_BASE_REF")
+        && !base_ref.is_empty()
+    {
+        for candidate in [format!("origin/{base_ref}"), base_ref] {
+            if run_git_checked(
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{candidate}^{{commit}}"),
+                ],
+                root,
+            )
+            .is_ok()
+            {
+                let mut union: BTreeSet<String> = working.into_iter().collect();
+                union.extend(base_ref_changed_files(&candidate, root)?);
+                return Ok(union.into_iter().collect());
+            }
         }
     }
-    std::env::var("GITHUB_BASE_REF")
-        .ok()
-        .and_then(|base_ref| {
-            [format!("origin/{base_ref}"), base_ref]
-                .into_iter()
-                .map(|candidate| base_ref_changed_files(&candidate, root))
-                .find(|files| !files.is_empty())
-        })
-        .unwrap_or_else(|| status_changed_files(root))
+    Ok(working)
 }
 
-fn base_ref_changed_files(base_ref: &str, root: &Path) -> Vec<String> {
-    let files = run_git(
-        &["diff", "--name-only", &format!("{base_ref}...HEAD")],
+fn base_ref_changed_files(base_ref: &str, root: &Path) -> Result<Vec<String>, String> {
+    run_git_checked(
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{base_ref}^{{commit}}"),
+        ],
         root,
-    );
-    if files.is_empty() {
-        run_git(&["diff", "--name-only", base_ref, "HEAD"], root)
+    )
+    .map_err(|_| {
+        format!("Visual proof policy failed: base ref '{base_ref}' could not be resolved.")
+    })?;
+
+    if run_git_checked(&["merge-base", base_ref, "HEAD"], root).is_ok() {
+        run_git_checked(
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                &format!("{base_ref}...HEAD"),
+            ],
+            root,
+        )
     } else {
-        files
+        run_git_checked(
+            &["diff", "--name-only", "--no-renames", base_ref, "HEAD"],
+            root,
+        )
     }
 }
 
-fn status_changed_files(root: &Path) -> Vec<String> {
-    let mut files = run_git(&["status", "--porcelain=v1", "--untracked-files=all"], root)
-        .into_iter()
-        .filter_map(|line| {
-            let path = line.get(3..)?;
-            Some(
-                path.split_once(" -> ")
-                    .map_or(path, |(_old, new)| new)
-                    .to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
+fn status_changed_files(root: &Path) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    for line in run_git_checked(&["status", "--porcelain=v1", "--untracked-files=all"], root)? {
+        let Some(path) = line.get(3..) else {
+            continue;
+        };
+        if let Some((old, new)) = path.split_once(" -> ") {
+            if !old.is_empty() {
+                files.push(old.to_string());
+            }
+            if !new.is_empty() {
+                files.push(new.to_string());
+            }
+        } else if !path.is_empty() {
+            files.push(path.to_string());
+        }
+    }
     files.sort();
     files.dedup();
-    files
+    Ok(files)
 }
 
-fn run_git(args: &[&str], root: &Path) -> Vec<String> {
-    let Ok(output) = Command::new("git").args(args).current_dir(root).output() else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
+fn run_git_checked(args: &[&str], root: &Path) -> Result<Vec<String>, String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(root);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+    ] {
+        cmd.env_remove(var);
     }
-    String::from_utf8_lossy(&output.stdout)
+    if root != default_repo_root() {
+        cmd.env_remove("GIT_INDEX_FILE");
+    }
+    let output = cmd
+        .output()
+        .map_err(|error| format!("git {args:?} failed to run: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git {args:?} failed: {}", stderr.trim()));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim_end)
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
-        .collect()
+        .collect())
 }
 
 fn default_repo_root() -> PathBuf {
@@ -1337,5 +1400,83 @@ mod tests {
                 "{path} must require the native minimap animation invariant"
             );
         }
+    }
+
+    #[test]
+    fn changed_files_union_keeps_visual_digest_identical_across_commit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let mut cmd = Command::new("git");
+            cmd.args(args).current_dir(root);
+            for (key, _) in std::env::vars() {
+                if key.starts_with("GIT_") {
+                    cmd.env_remove(&key);
+                }
+            }
+            cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1");
+            let status = cmd.status().expect("git");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "user.email", "t@example.invalid"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        fs::create_dir_all(root.join("resources/ui")).expect("mkdir");
+        fs::write(root.join("resources/ui/a.blp"), "base\n").expect("write");
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ]);
+        let base_sha = run_git_checked(&["rev-parse", "HEAD"], root).expect("HEAD")[0].clone();
+        fs::write(root.join("resources/ui/a.blp"), "edited\n").expect("write");
+        let dirty_files: Vec<String> = changed_files(Some(&base_sha), root)
+            .expect("changed_files dirty")
+            .into_iter()
+            .filter(|p| is_visual_sensitive(p))
+            .collect();
+        let dirty_digest = visual_change_fingerprint(&dirty_files, root).expect("digest");
+        git(&["add", "-A"]);
+        git(&["-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "ui"]);
+        let clean_files: Vec<String> = changed_files(Some(&base_sha), root)
+            .expect("changed_files clean")
+            .into_iter()
+            .filter(|p| is_visual_sensitive(p))
+            .collect();
+        let clean_digest = visual_change_fingerprint(&clean_files, root).expect("digest");
+        assert_eq!(dirty_files, vec!["resources/ui/a.blp".to_string()]);
+        assert_eq!(clean_files, dirty_files);
+        assert_eq!(clean_digest, dirty_digest);
+
+        let err = changed_files(Some("refs/heads/does-not-exist"), root);
+        assert!(err.is_err(), "unresolvable --base-ref must fail closed");
+        let invalid_outcome = check_policy(
+            &root.join("build/smoke/visual-geometry"),
+            Some("refs/heads/does-not-exist"),
+            false,
+            Some(root),
+        );
+        assert!(
+            !invalid_outcome.ok,
+            "check_policy must fail closed on unresolvable --base-ref"
+        );
+
+        fs::create_dir_all(root.join("docs")).expect("mkdir docs");
+        git(&["mv", "resources/ui/a.blp", "docs/a.blp"]);
+        let moved_dirty: Vec<String> = changed_files(Some(&base_sha), root)
+            .expect("moved dirty")
+            .into_iter()
+            .filter(|p| is_visual_sensitive(p))
+            .collect();
+        assert!(
+            moved_dirty.contains(&"resources/ui/a.blp".to_string()),
+            "renaming a visual file out of ui/ must still trigger visual proof: {moved_dirty:?}"
+        );
     }
 }

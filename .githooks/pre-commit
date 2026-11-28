@@ -14,5 +14,13 @@ if [[ -x ./scripts/precommit-scope.py ]] && ./scripts/precommit-scope.py docs-on
     echo "Docs-only commit: rustfmt + policy audits (Clippy skipped: no Rust build input staged)"
     exec make pre-commit-docs
 fi
+
+# Clean worktree whose staged index tree already passed `make check` within TTL
+# skips redundant Clippy + policy checks.
+if [[ -x ./scripts/precommit-scope.py ]] && ./scripts/precommit-scope.py stamp-valid; then
+    echo "Pre-commit: clean tree matches recent make check stamp; skipping redundant Clippy"
+    exit 0
+fi
+
 echo "Running LushText pre-commit checks (rustfmt + all-feature Clippy + policy audits)..."
 exec make pre-commit

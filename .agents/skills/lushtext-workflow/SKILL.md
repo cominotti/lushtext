@@ -108,9 +108,11 @@ population an old cell pooled. A correction may move a figure **either** way.
 
 See [references/gate-order.md](references/gate-order.md). Two hazards worth
 knowing before you start: untracked files are invisible to every diff-aware gate,
-and any edit under `crates/lushtext-ui/src/ui/`, `crates/lushtext/tests/widget/`,
-`resources/ui/` or `resources/style/` voids the accessibility, visual, and
-visual-geometry summaries.
+and any edit under `crates/lushtext-ui/src/ui/`, `resources/ui/`, or
+`resources/style/` (or automation/smoke sources) voids the accessibility, visual,
+and visual-geometry summaries (`make check-smoke-proof` at `pre-push` /
+`verify-local`; edits solely under `crates/lushtext/tests/widget/` still run
+`make check-accessibility-policy` static checks and `make test-widget-headless`).
 
 ## What not to do
 
