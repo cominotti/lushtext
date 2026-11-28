@@ -96,7 +96,7 @@ enum AttachWaitStep {
     #[default]
     Idle,
     AwaitingMap,
-    AwaitingFirstFrame(Option<(gtk4::gdk::FrameClock, glib::SignalHandlerId)>),
+    AwaitingFirstFrame(gtk_lush_signals::SignalSlot),
     AwaitingQuiet {
         armed_since_us: i64,
         source: Option<glib::SourceId>,
@@ -106,15 +106,12 @@ enum AttachWaitStep {
 impl AttachWaitStep {
     fn retire(self) {
         match self {
-            Self::AwaitingFirstFrame(Some((clock, handler))) => clock.disconnect(handler),
+            Self::AwaitingFirstFrame(slot) => slot.clear(),
             Self::AwaitingQuiet {
                 source: Some(source),
                 ..
             } => source.remove(),
-            Self::Idle
-            | Self::AwaitingMap
-            | Self::AwaitingFirstFrame(None)
-            | Self::AwaitingQuiet { source: None, .. } => {}
+            Self::Idle | Self::AwaitingMap | Self::AwaitingQuiet { source: None, .. } => {}
         }
     }
 }
@@ -155,7 +152,7 @@ pub struct LanguageAttachState {
     /// When the editor's first frame after it was mapped was painted.
     first_frame_us: Cell<Option<i64>>,
     phase: RefCell<AttachStagePhase>,
-    map_handler: RefCell<Option<glib::SignalHandlerId>>,
+    map_handler: gtk_lush_signals::SignalSlot,
     /// Evidence: attach stages that ran, and of those how many ran past the
     /// deadline rather than after input-quiet.
     stages_run: Cell<u64>,
@@ -535,9 +532,7 @@ impl LushtextEditorPage {
     /// Retire every source and handler (from `dispose`).
     pub(crate) fn dispose_language_attach(&self) {
         self.cancel_language_attach();
-        if let Some(handler) = self.imp().language_attach.map_handler.take() {
-            self.imp().source_view.disconnect(handler);
-        }
+        self.imp().language_attach.map_handler.clear();
     }
 
     fn cancel_scheduled_attach(&self) {
@@ -587,7 +582,7 @@ impl LushtextEditorPage {
             if let Some(step) = old {
                 step.retire();
             }
-            if state.map_handler.borrow().is_none() {
+            if !state.map_handler.is_connected() {
                 let editor = self.downgrade();
                 let handler = view.connect_map(move |_| {
                     if let Some(editor) = editor.upgrade()
@@ -597,7 +592,7 @@ impl LushtextEditorPage {
                         editor.schedule_attach_after_first_frame();
                     }
                 });
-                state.map_handler.replace(Some(handler));
+                state.map_handler.replace(&view, handler);
             }
             return;
         }
@@ -613,7 +608,9 @@ impl LushtextEditorPage {
                     editor.first_editor_frame_painted(generation);
                 }
             });
-            let new_step = AttachWaitStep::AwaitingFirstFrame(Some((clock, handler)));
+            let slot = gtk_lush_signals::SignalSlot::new();
+            slot.replace(&clock, handler);
+            let new_step = AttachWaitStep::AwaitingFirstFrame(slot);
             let old = {
                 let mut phase = state.phase.borrow_mut();
                 match &mut *phase {

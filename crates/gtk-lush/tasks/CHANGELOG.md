@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Kept non-`Send` `(state, then)` closures on the calling GTK thread in a
+  thread-local slab keyed by task id instead of moving `ThreadGuard`s onto
+  worker threads: worker panics now deliver cleanup back to the main loop and
+  release the slot without `SIGABRT`, and off-main-thread callers fail
+  explicitly on slab miss rather than stranding work in a worker TLS queue.
+- Acquired `SlotGuard` before `std::thread::Builder::spawn` so spawn failures
+  release slots immediately, and eliminated the fast-path `Box` allocation.
+- Replaced `MainContext::default().invoke(drain_pending_tasks)` with an
+  `AtomicBool`-coalesced `glib::idle_add_full(completion_priority(), ...)` wakeup
+  so saturated wakeups neither invert priority behind text validation nor run
+  `thread::spawn` inline inside `completion-observer` spans.
+- Tracked `last_delivered_at` in `CompletionRun` so self-chaining completions
+  across momentary empty queues still age after eight deliveries or 16 ms.
 - Completions are delivered from one GLib source at the new
   `completion_priority()` (`GDK_PRIORITY_REDRAW + 4`), one completion per
   dispatch, instead of one `G_PRIORITY_DEFAULT_IDLE` idle each. A

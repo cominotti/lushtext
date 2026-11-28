@@ -95,11 +95,12 @@ Workspace layout: `crates/gtk-lush/<member>` with package names
 RAII lifetime management for GObject signal handlers, property bindings, and
 controller registrations.
 
-- **API:** `SignalBag`, `BindingBag`, and `RegistrationBag` value types stored
-  on an `imp` struct or row lifecycle owner. Callers use ordinary gtk-rs
-  `connect_*` / `bind_property` APIs, then record the returned handler or
-  binding with the appropriate bag. Signal sources are held weakly, so bags can
-  outlive already-finalized widgets or shared settings objects.
+- **API:** `SignalBag`, `SignalSlot`, `BindingBag`, and `RegistrationBag` value
+  types stored on an `imp` struct or row lifecycle owner. Callers use ordinary
+  gtk-rs `connect_*` / `bind_property` APIs, then record the returned handler
+  or binding with the appropriate bag or single-slot owner. Signal sources are
+  held weakly, so bags and slots can outlive already-finalized widgets or
+  shared settings objects.
 - **Rust features:** RAII/`Drop`, ownership to encode "handler must not
   outlive widget", zero unsafe.
 - **Replaces in LushText:** hand-tracked handler-id fields, row-data
@@ -139,8 +140,9 @@ Main-thread-safe background work with staleness-proof completion.
   `spawn_blocking_then_weak`, and `FreshnessToken`/`Fresh`/`Stale` helpers.
   The crate owns bounded dispatch and main-thread completion; callers keep the
   actual generation, path, tab, or search identity policy beside the workflow.
-- **Rust features:** typestate, `glib::thread_guard::ThreadGuard` wrapping,
-  `Send` bounds that document the thread contract in signatures.
+- **Rust features:** main-thread `COMPLETION_SLAB` storage for non-`Send`
+  `(state, then)` closures, `Send` bounds on `work` and results that document
+  the thread contract in signatures.
 - **Replaces in LushText:** the former `services::async_task`; per-call-site
   generation/weak-identity checks remain explicit in their workflow modules.
 - **Acceptance:** all async-backed widget tests pass unmodified in timing;

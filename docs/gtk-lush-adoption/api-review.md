@@ -7,12 +7,15 @@ spikes for `gtk4-rs` and Kooha.
 
 ## Decisions
 
-- `gtk-lush-signals`: keep `SignalBag`, `BindingBag`, and `RegistrationBag`.
-  The lab's recycle/rebind workflow confirms that explicit bags are smaller
-  than a signal DSL.
+- `gtk-lush-signals`: keep `SignalBag`, `BindingBag`, and `RegistrationBag`,
+  and add `SignalSlot` for single replaceable weak-source handlers without
+  allocating a `Vec`. The lab's recycle/rebind workflow confirms that explicit
+  bags/slots are smaller than a signal DSL.
 - `gtk-lush-settle`: keep `Debounce`, `SettleBurst`, `SupersedingTimer`, and
-  `TimerToken`. The stock fixture confirms the current shape is adoptable with
-  ordinary gtk-rs widgets. No runtime or non-GTK scheduler will be added.
+  `TimerToken`, adding `is_armed()` on `Debounce` and `SupersedingTimer` and
+  eager `SourceId` cleanup on `SettleBurst` and `Debounce::advance()`. The
+  stock fixture confirms the current shape is adoptable with ordinary gtk-rs
+  widgets. No runtime or non-GTK scheduler will be added.
 - `gtk-lush-tasks`: keep caller-owned freshness. The lab wraps simulated
   panics as `Result` values, which keeps the crate from becoming an executor or
   app-level error framework. Accepted limitation (`spawn-completion-priority`):

@@ -123,6 +123,8 @@ teardown or recycling lifecycle:
 - `SignalBag` for signal handlers connected to settings, style managers,
   buffers, search contexts, tree rows, or other GObjects that can outlive the
   widget/workflow closure they call.
+- `SignalSlot` for a single replaceable weak-source signal handler (frame-clock
+  paint, map/unmap wait, window-level observer) without a `Vec` allocation.
 - `BindingBag` for row-local or workflow-local `glib::Binding` values that must
   be unbound when a factory row is recycled or a projection is rebound.
 - `RegistrationBag` for controller-like cleanup callbacks that are not

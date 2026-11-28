@@ -5,6 +5,7 @@ Define the reusable GTK Lush viewport observation helpers used by stock gtk-rs
 applications and by LushText editor geometry workflows.
 
 ## Requirements
+
 ### Requirement: Leaf viewport observation crate
 `gtk-lush-viewport` SHALL provide viewport observation helpers for stock
 gtk-rs applications while remaining an independently adoptable GTK Lush leaf
@@ -30,29 +31,26 @@ systems.
 - **AND** it does not install a replacement layout manager or animation system
 
 ### Requirement: Adjustment page-size changes report viewport reflow
-The crate SHALL observe viewport width and height changes through scrollable
-adjustments, including `page-size` changes that occur when GTK reallocates
-layout-manager widgets. It MUST expose axis-specific events and avoid reporting
-unchanged dimensions as fresh reflow.
+`gtk-lush-viewport` SHALL observe horizontal and vertical scrollable adjustments to report axis-specific `page-size` reflow beyond epsilon while rejecting non-finite/`NaN` `page_size` values from poisoning future comparisons. `ViewportObserver::for_scrollable` MUST document that callers invoke it after the scrollable is attached to its `GtkScrolledWindow` so replaced adjustments are not missed.
 
 #### Scenario: Width-only reflow is observed
-- **WHEN** a scrollable widget's horizontal adjustment page size changes while
-  height remains unchanged
+- **WHEN** a scrollable widget's horizontal adjustment page size changes while height remains unchanged
 - **THEN** the observer emits a horizontal viewport-change event
 - **AND** a consumer can run width-only repair logic from that event
 
 #### Scenario: Height-only reflow is observed
-- **WHEN** a scrollable widget's vertical adjustment page size changes while
-  width remains unchanged
+- **WHEN** a scrollable widget's vertical adjustment page size changes while width remains unchanged
 - **THEN** the observer emits a vertical viewport-change event
 - **AND** a consumer can run height-only repair logic from that event
 
 #### Scenario: Dead allocation-vfunc trap is documented
 - **WHEN** a consumer reads the crate docs
-- **THEN** the docs explain that layout-manager widget subclasses may not
-  receive useful `size_allocate` overrides
-- **AND** they show adjustment observation as the stock gtk-rs-compatible
-  alternative
+- **THEN** the docs explain that layout-manager widget subclasses may not receive useful `size_allocate` overrides and that `for_scrollable` must be called after parenting into `GtkScrolledWindow`
+- **AND** they show adjustment observation as the stock gtk-rs-compatible alternative
+
+#### Scenario: Non-finite page size does not poison filter state
+- **WHEN** an adjustment emits `changed` with a `NaN` or non-finite `page_size`
+- **THEN** the observer ignores the non-finite sample without storing `NaN` as the baseline size
 
 ### Requirement: Rest state tracks user intent outside reflow bursts
 The crate SHALL provide rest-state helpers for start-edge horizontal and
@@ -108,27 +106,19 @@ workflow repairs; they remain callbacks or consumer code.
   margin policy as a generic rule
 
 ### Requirement: Public documentation and tests prove viewport behavior
-Every public item in `gtk-lush-viewport` SHALL be documented under the GTK Lush
-engineering bar. Observable behavior MUST have runnable doctests, unit tests,
-or widget tests as appropriate. The crate MUST keep `#![forbid(unsafe_code)]`
-and `#![deny(missing_docs)]`.
+Every public item in `gtk-lush-viewport` SHALL keep `#![forbid(unsafe_code)]`, `#![deny(missing_docs)]`, accurate registration count docs on `len()`, and `Debug` implementations. Display-dependent observer tests MUST execute in the headless widget lane rather than sitting unexecuted behind `#[ignore]` attributes in `src/`.
 
 #### Scenario: Missing public docs fail the crate
-- **WHEN** a public observer, event, rest-state, guard, or helper type is added
-  without documentation
+- **WHEN** a public observer, event, rest-state, guard, or helper type is added without documentation
 - **THEN** the crate fails to build under its lint configuration
 
 #### Scenario: Tests prove page-size and value behavior
-- **WHEN** `cargo test -p gtk-lush-viewport` runs
-- **THEN** tests cover axis-specific page-size changes, unchanged dimensions,
-  value-changed rest-state updates, paused reflow state, and dead-target
-  cleanup without linking LushText
+- **WHEN** `cargo test -p gtk-lush-viewport` and the headless `gtk_lush_adoption` widget lane run
+- **THEN** unit tests cover `RestState` and epsilon math without a display, and the headless widget lane executes all observer filter, accumulation, axis, drop-disconnect, and `RestState` tests without `#[ignore]` stubs
 
 #### Scenario: README teaches the choosing rule
 - **WHEN** the README is rendered
-- **THEN** it explains when adjustment observation is appropriate, when a
-  consumer should use ordinary GTK signals directly, and how the crate avoids
-  becoming a layout framework
+- **THEN** it explains when adjustment observation is appropriate, when a consumer should use ordinary GTK signals directly, and how the crate avoids becoming a layout framework
 
 ### Requirement: LushText overscroll observers migrate to the crate
 LushText SHALL replace fitting viewport observation logic in

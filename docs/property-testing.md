@@ -61,6 +61,7 @@ That expands to:
 
 ```sh
 cargo nextest run -p lushtext-model -p lushtext-services -p lushtext-ui --features property-tests --test properties --profile property
+cargo nextest run -p gtk-lush-settle --features property-tests --lib --profile property
 ```
 
 Run a deeper opt-in pass:
@@ -70,9 +71,10 @@ make test-prop-deep
 make test-prop-deep PROPTEST_DEEP_CASES=1024
 ```
 
-The property target is guarded by `required-features = ["property-tests"]`, so
+The property targets are guarded by `required-features = ["property-tests"]` (or
+`#[cfg(all(test, feature = "property-tests"))]` in `gtk-lush-settle`), so
 default commands such as `cargo nextest run --workspace` and the mutation
-wrapper do not compile or execute it unless the feature is explicitly enabled.
+wrapper do not compile or execute them unless the feature is explicitly enabled.
 
 ## Runtime Policy
 

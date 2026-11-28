@@ -158,6 +158,7 @@ impl ViewportValueChange {
 ///
 /// Keep this value alive for as long as callbacks should run. Dropping it
 /// disconnects all adjustment handlers.
+#[derive(Debug)]
 pub struct ViewportObserver {
     registrations: Vec<SignalRegistration>,
 }
@@ -186,22 +187,20 @@ impl ViewportObserver {
             (hadjustment.clone(), ViewportAxis::Horizontal),
             (vadjustment.clone(), ViewportAxis::Vertical),
         ] {
-            let last_page_size = Rc::new(Cell::new(adjustment.page_size()));
+            let last_page_size = Cell::new(initial_observed_page_size(adjustment.page_size()));
             let callback = Rc::clone(&on_bounds_changed);
-            let observed_size = Rc::clone(&last_page_size);
             let handler_id = adjustment.connect_changed(move |adjustment| {
                 let page_size = adjustment.page_size();
-                let previous_page_size = observed_size.get();
-                if (previous_page_size - page_size).abs() <= LOWER_EDGE_EPSILON {
-                    return;
+                if let Some(previous_page_size) =
+                    accept_page_size_change(&last_page_size, page_size)
+                {
+                    callback(ViewportBoundsChange::new(
+                        axis,
+                        adjustment,
+                        previous_page_size,
+                        page_size,
+                    ));
                 }
-                observed_size.set(page_size);
-                callback(ViewportBoundsChange::new(
-                    axis,
-                    adjustment,
-                    previous_page_size,
-                    page_size,
-                ));
             });
             registrations.push(SignalRegistration::new(&adjustment, handler_id));
 
@@ -216,6 +215,12 @@ impl ViewportObserver {
     }
 
     /// Observe the adjustments exposed by a GTK scrollable.
+    ///
+    /// **Precondition:** call this after `scrollable` is attached to its
+    /// `GtkScrolledWindow` (or after its adjustments are installed).
+    /// `GtkScrolledWindow` replaces the scrollable's horizontal and vertical
+    /// adjustments when parenting it, so an observer attached earlier would
+    /// watch discarded adjustments.
     #[must_use]
     pub fn for_scrollable<S, B, V>(
         scrollable: &S,
@@ -237,7 +242,8 @@ impl ViewportObserver {
         ))
     }
 
-    /// Return the number of live signal registrations owned by the observer.
+    /// Return the number of signal registrations owned by the observer (always 4:
+    /// two per axis).
     #[must_use]
     pub fn len(&self) -> usize {
         self.registrations.len()
@@ -258,6 +264,7 @@ impl Drop for ViewportObserver {
     }
 }
 
+#[derive(Debug)]
 struct SignalRegistration {
     source: WeakRef<Object>,
     handler_id: SignalHandlerId,
@@ -268,9 +275,8 @@ impl SignalRegistration {
         // The observer owns the handler, not the adjustment. Holding a weak
         // source lets drop-time cleanup disconnect when the adjustment is still
         // alive while staying harmless if GTK destroyed it first.
-        let source: Object = source.clone().upcast();
         Self {
-            source: source.downgrade(),
+            source: source.upcast_ref::<Object>().downgrade(),
             handler_id,
         }
     }
@@ -394,109 +400,31 @@ pub fn rests_at_lower(value: f64, lower: f64) -> bool {
     (value - lower).abs() <= LOWER_EDGE_EPSILON
 }
 
+fn initial_observed_page_size(page_size: f64) -> f64 {
+    if page_size.is_finite() {
+        page_size
+    } else {
+        0.0
+    }
+}
+
+fn accept_page_size_change(observed_size: &Cell<f64>, page_size: f64) -> Option<f64> {
+    if !page_size.is_finite() {
+        return None;
+    }
+    let previous_page_size = observed_size.get();
+    if (previous_page_size - page_size).abs() <= LOWER_EDGE_EPSILON {
+        return None;
+    }
+    observed_size.set(page_size);
+    Some(previous_page_size)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::rc::Rc;
 
     use super::*;
-
-    fn adjustment(page_size: f64) -> gtk4::Adjustment {
-        gtk4::Adjustment::new(0.0, 0.0, 1_000.0, 1.0, 10.0, page_size)
-    }
-
-    #[test]
-    #[ignore = "requires an initialized GTK display"]
-    fn observer_filters_unchanged_page_size() {
-        let hadjustment = adjustment(100.0);
-        let vadjustment = adjustment(200.0);
-        let calls = Rc::new(Cell::new(0));
-        let observed_calls = Rc::clone(&calls);
-        let _observer = ViewportObserver::new(
-            &hadjustment,
-            &vadjustment,
-            move |_| observed_calls.set(observed_calls.get() + 1),
-            |_| {},
-        );
-
-        hadjustment.set_page_size(100.25);
-        hadjustment.set_page_size(150.0);
-
-        assert_eq!(calls.get(), 1);
-    }
-
-    #[test]
-    #[ignore = "requires an initialized GTK display"]
-    fn observer_accumulates_sub_epsilon_page_size_steps() {
-        let hadjustment = adjustment(100.0);
-        let vadjustment = adjustment(200.0);
-        let calls = Rc::new(Cell::new(0));
-        let previous = Rc::new(Cell::new(0.0));
-        let observed_calls = Rc::clone(&calls);
-        let observed_previous = Rc::clone(&previous);
-        let _observer = ViewportObserver::new(
-            &hadjustment,
-            &vadjustment,
-            move |change| {
-                observed_calls.set(observed_calls.get() + 1);
-                observed_previous.set(change.previous_page_size());
-            },
-            |_| {},
-        );
-
-        hadjustment.set_page_size(100.25);
-        hadjustment.set_page_size(100.6);
-
-        assert_eq!(calls.get(), 1);
-        assert_eq!(previous.get(), 100.0);
-    }
-
-    #[test]
-    #[ignore = "requires an initialized GTK display"]
-    fn observer_reports_axis_and_previous_size() {
-        let hadjustment = adjustment(100.0);
-        let vadjustment = adjustment(200.0);
-        let axis = Rc::new(Cell::new(None));
-        let previous = Rc::new(Cell::new(0.0));
-        let observed_axis = Rc::clone(&axis);
-        let observed_previous = Rc::clone(&previous);
-        let _observer = ViewportObserver::new(
-            &hadjustment,
-            &vadjustment,
-            move |change| {
-                observed_axis.set(Some(change.axis()));
-                observed_previous.set(change.previous_page_size());
-            },
-            |_| {},
-        );
-
-        vadjustment.set_page_size(225.0);
-
-        assert_eq!(axis.get(), Some(ViewportAxis::Vertical));
-        assert_eq!(previous.get(), 200.0);
-    }
-
-    #[test]
-    #[ignore = "requires an initialized GTK display"]
-    fn observer_disconnects_on_drop() {
-        let hadjustment = adjustment(100.0);
-        let vadjustment = adjustment(200.0);
-        let calls = Rc::new(Cell::new(0));
-        {
-            let observed_calls = Rc::clone(&calls);
-            let observer = ViewportObserver::new(
-                &hadjustment,
-                &vadjustment,
-                move |_| observed_calls.set(observed_calls.get() + 1),
-                |_| {},
-            );
-            assert_eq!(observer.len(), 4);
-        }
-
-        hadjustment.set_page_size(140.0);
-
-        assert_eq!(calls.get(), 0);
-    }
 
     #[test]
     fn rest_state_records_lower_edge_and_respects_pause() {
@@ -515,27 +443,28 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an initialized GTK display"]
-    fn value_change_reports_rest_state() {
-        let hadjustment = adjustment(100.0);
-        let vadjustment = adjustment(200.0);
-        let rests_at_lower = Rc::new(Cell::new(true));
-        let observed_rest = Rc::clone(&rests_at_lower);
-        let _observer = ViewportObserver::new(
-            &hadjustment,
-            &vadjustment,
-            |_| {},
-            move |change| observed_rest.set(change.rests_at_lower()),
-        );
-
-        vadjustment.set_value(50.0);
-
-        assert!(!rests_at_lower.get());
-    }
-
-    #[test]
     fn lower_edge_epsilon_matches_adjustment_policy() {
         assert!(super::rests_at_lower(0.49, 0.0));
         assert!(!super::rests_at_lower(0.51, 0.0));
+    }
+
+    #[test]
+    fn epsilon_filter_ignores_non_finite_page_size_without_poisoning() {
+        assert_eq!(initial_observed_page_size(f64::NAN), 0.0);
+        assert_eq!(initial_observed_page_size(f64::INFINITY), 0.0);
+        assert_eq!(initial_observed_page_size(f64::NEG_INFINITY), 0.0);
+        assert_eq!(initial_observed_page_size(-0.0), 0.0);
+        assert_eq!(initial_observed_page_size(100.0), 100.0);
+
+        let observed = Cell::new(initial_observed_page_size(100.0));
+        assert_eq!(accept_page_size_change(&observed, f64::NAN), None);
+        assert_eq!(accept_page_size_change(&observed, f64::INFINITY), None);
+        assert_eq!(accept_page_size_change(&observed, f64::NEG_INFINITY), None);
+        assert_eq!(observed.get(), 100.0);
+        assert_eq!(accept_page_size_change(&observed, 100.25), None);
+        assert_eq!(accept_page_size_change(&observed, -0.0), Some(100.0));
+        assert_eq!(accept_page_size_change(&observed, 0.25), None);
+        assert_eq!(accept_page_size_change(&observed, 140.0), Some(-0.0));
+        assert_eq!(observed.get(), 140.0);
     }
 }

@@ -4,8 +4,9 @@
 //!
 //! `spawn_blocking_then` runs blocking work on a background thread, applies a
 //! small process-wide concurrency limit, and returns the result to GLib's main
-//! loop. Non-`Send` GTK-thread state is carried with `glib::thread_guard` and
-//! only recovered in the main-thread completion callback.
+//! loop. Non-`Send` GTK-thread state and completion callbacks stay on the
+//! calling GTK thread inside a thread-local slab, keyed by task id, so worker
+//! panics never drop non-`Send` state on a worker thread.
 //!
 //! Completions are delivered from one GLib source at [`completion_priority`],
 //! one completion per main-loop dispatch, in the order the workers finished,
@@ -41,9 +42,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -66,8 +68,10 @@ pub const DEFAULT_MAX_CONCURRENT_SPAWNS: usize = 8;
 /// more predictable than per-widget pools. Tests exercise the pure acquisition
 /// helper with caller-owned counters to avoid relying on global state.
 static ACTIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
+static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
-type PendingTask = Box<dyn FnOnce() + 'static>;
+type PendingTask = Box<dyn FnOnce(SlotGuard) + Send + 'static>;
+type SlabEntry = Box<dyn FnOnce(Option<Box<dyn Any + Send>>) + 'static>;
 
 /// The value of [`completion_priority`]: `GDK_PRIORITY_REDRAW + 4`.
 ///
@@ -173,12 +177,16 @@ mod observer {
     }
 }
 
-/// One finished worker's result, ready for its GTK-thread callback.
-type Completion = Box<dyn FnOnce() + Send + 'static>;
+/// One finished (or panicked) worker's result, ready for its GTK-thread slab dispatch.
+struct CompletedTask {
+    id: u64,
+    slot_guard: SlotGuard,
+    payload: Option<Box<dyn Any + Send>>,
+}
 
 /// Finished results waiting for the delivery source, in finishing order.
 struct CompletionLane {
-    queue: VecDeque<Completion>,
+    queue: VecDeque<CompletedTask>,
     /// Whether a delivery source is attached to the main context. Read and
     /// written under the lane's lock, so a worker arms exactly one source.
     armed: bool,
@@ -193,12 +201,12 @@ fn lock_completions() -> std::sync::MutexGuard<'static, CompletionLane> {
     COMPLETIONS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Queue `completion` for the main loop, arming the delivery source if none
+/// Queue `completed` for the main loop, arming the delivery source if none
 /// is attached. Called from worker threads.
-fn deliver(completion: Completion) {
+fn deliver(completed: CompletedTask) {
     let arm = {
         let mut lane = lock_completions();
-        lane.queue.push_back(completion);
+        lane.queue.push_back(completed);
         !std::mem::replace(&mut lane.armed, true)
     };
     if arm {
@@ -206,47 +214,125 @@ fn deliver(completion: Completion) {
     }
 }
 
-/// The current run of back-to-back completions: how many ran and when the
-/// first started. Main-thread only, like the delivery source.
+/// The current run of back-to-back completions: how many ran, when the
+/// first started, and when the last finished. Main-thread only, like the
+/// delivery source.
 #[derive(Clone, Copy, Default)]
 struct CompletionRun {
     delivered: usize,
     started: Option<Instant>,
+    last_delivered_at: Option<Instant>,
 }
 
 thread_local! {
     static COMPLETION_RUN: Cell<CompletionRun> = const {
-        Cell::new(CompletionRun { delivered: 0, started: None })
+        Cell::new(CompletionRun {
+            delivered: 0,
+            started: None,
+            last_delivered_at: None,
+        })
     };
+    /// Main-thread slab holding non-`Send` `(state, then)` closures keyed by task id.
+    ///
+    /// Wrapped in `ManuallyDrop` so still-in-flight entries whose workers outlive
+    /// `main()` are not dropped during `__call_tls_dtors`: GTK objects and
+    /// `MainContext` guards inside `state`/`then` can access sibling TLS slots
+    /// on drop, which panics with `AccessError` and aborts in a TLS destructor.
+    static COMPLETION_SLAB: std::mem::ManuallyDrop<RefCell<HashMap<u64, SlabEntry>>> =
+        std::mem::ManuallyDrop::new(RefCell::new(HashMap::new()));
     /// The two sources of a pending yield: the `DEFAULT_IDLE` hop and the
     /// [`YIELD_DEADLINE`] fallback. Whichever runs first removes the other.
     static YIELD_SOURCES: RefCell<Option<(glib::SourceId, glib::SourceId)>> =
         const { RefCell::new(None) };
 }
 
+fn insert_slab_entry(id: u64, entry: SlabEntry) {
+    COMPLETION_SLAB.with(|slab| slab.borrow_mut().insert(id, entry));
+}
+
+fn take_slab_entry(id: u64) -> SlabEntry {
+    COMPLETION_SLAB
+        .with(|slab| slab.borrow_mut().remove(&id))
+        .unwrap_or_else(|| {
+            panic!(
+                "gtk-lush-tasks: completion {id} missing from main-thread slab \
+                 (spawn_blocking_then must be called on the GTK main thread)"
+            )
+        })
+}
+
+/// Ensure `COMPLETIONS.armed` is reset or re-armed if `run_completion` unwinds.
+struct CompletionUnwindGuard {
+    disarmed_normally: bool,
+}
+
+impl Drop for CompletionUnwindGuard {
+    fn drop(&mut self) {
+        if !self.disarmed_normally {
+            let rearm = {
+                let mut lane = lock_completions();
+                if lane.queue.is_empty() {
+                    lane.armed = false;
+                    false
+                } else {
+                    lane.armed = true;
+                    true
+                }
+            };
+            if rearm {
+                glib::idle_add_full(completion_priority(), deliver_one_completion);
+            }
+        }
+    }
+}
+
 /// The delivery source's dispatch: run the oldest completion, then stay
 /// attached while more are waiting, or yield once the run has aged.
 fn deliver_one_completion() -> glib::ControlFlow {
+    let mut run = COMPLETION_RUN.get();
+    if run
+        .last_delivered_at
+        .is_some_and(|last| last.elapsed() >= COMPLETION_RUN_BUDGET)
+    {
+        run = CompletionRun::default();
+    }
     let next = {
         let mut lane = lock_completions();
-        let next = lane.queue.pop_front();
-        if next.is_none() {
+        if lane.queue.is_empty() {
             lane.armed = false;
+            COMPLETION_RUN.set(run);
+            return glib::ControlFlow::Break;
         }
-        next
+        if run.delivered >= COMPLETIONS_BEFORE_YIELD
+            || run
+                .started
+                .is_some_and(|started| started.elapsed() >= COMPLETION_RUN_BUDGET)
+        {
+            // Aged across a momentary empty queue: leave `lane.armed = true` and
+            // the waiting item in the queue, yield once, and resume fresh.
+            COMPLETION_RUN.set(CompletionRun::default());
+            drop(lane);
+            yield_to_lower_priorities();
+            return glib::ControlFlow::Break;
+        }
+        lane.queue.pop_front()
     };
-    let Some(completion) = next else {
-        COMPLETION_RUN.set(CompletionRun::default());
+    let Some(completed) = next else {
+        COMPLETION_RUN.set(run);
         return glib::ControlFlow::Break;
     };
-    let mut run = COMPLETION_RUN.get();
+    let mut unwind_guard = CompletionUnwindGuard {
+        disarmed_normally: false,
+    };
     let started = *run.started.get_or_insert_with(Instant::now);
-    run_completion(completion);
+    run_completion(completed);
     run.delivered += 1;
+    run.last_delivered_at = Some(Instant::now());
     let mut lane = lock_completions();
     if lane.queue.is_empty() {
         lane.armed = false;
-        COMPLETION_RUN.set(CompletionRun::default());
+        unwind_guard.disarmed_normally = true;
+        COMPLETION_RUN.set(run);
         return glib::ControlFlow::Break;
     }
     drop(lane);
@@ -254,25 +340,33 @@ fn deliver_one_completion() -> glib::ControlFlow {
         // Aged: detach (the lane stays `armed`, so workers do not attach a
         // second source) and come back after the main loop has reached lower
         // priorities once, or after the deadline.
+        unwind_guard.disarmed_normally = true;
         COMPLETION_RUN.set(CompletionRun::default());
         yield_to_lower_priorities();
         return glib::ControlFlow::Break;
     }
+    unwind_guard.disarmed_normally = true;
     COMPLETION_RUN.set(run);
     glib::ControlFlow::Continue
 }
 
+fn execute_completed(completed: CompletedTask) {
+    let _slot_guard = completed.slot_guard;
+    let entry = take_slab_entry(completed.id);
+    entry(completed.payload);
+}
+
 /// Run one completion, reporting its span to the observer when the
 /// `completion-observer` feature installed one.
-fn run_completion(completion: Completion) {
+fn run_completion(completed: CompletedTask) {
     #[cfg(feature = "completion-observer")]
     {
         let started_us = glib::monotonic_time();
-        completion();
+        execute_completed(completed);
         observer::report(started_us, glib::monotonic_time());
     }
     #[cfg(not(feature = "completion-observer"))]
-    completion();
+    execute_completed(completed);
 }
 
 /// Detach for one main-loop pass: a `G_PRIORITY_DEFAULT_IDLE` hop, which runs
@@ -313,14 +407,18 @@ fn resume_after_yield(end: YieldEnd) {
     glib::idle_add_local_full(completion_priority(), deliver_one_completion);
 }
 
-thread_local! {
-    /// Main-thread FIFO of work waiting for a worker slot.
-    ///
-    /// The queued closures may contain GTK-thread state protected by
-    /// `ThreadGuard`, so this queue intentionally stays thread-local instead of
-    /// using a `Send` global executor. Slot release wakes the queue through
-    /// GLib's main context.
-    static PENDING_TASKS: RefCell<VecDeque<PendingTask>> = RefCell::new(VecDeque::new());
+/// FIFO of `Send` work waiting for a worker slot.
+///
+/// Non-`Send` `(state, then)` closures stay on the main thread in
+/// [`COMPLETION_SLAB`], so queued work descriptors only carry the task id and
+/// `Send` work closure. Slot release coalesces a wakeup at
+/// [`completion_priority`] via [`WAKE_ARMED`].
+static PENDING_TASKS: Mutex<VecDeque<PendingTask>> = Mutex::new(VecDeque::new());
+static PENDING_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WAKE_ARMED: AtomicBool = AtomicBool::new(false);
+
+fn lock_pending_tasks() -> std::sync::MutexGuard<'static, VecDeque<PendingTask>> {
+    PENDING_TASKS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Return the number of currently active background workers.
@@ -329,8 +427,8 @@ pub fn active_worker_count() -> usize {
     ACTIVE_THREADS.load(Ordering::Acquire)
 }
 
-fn try_acquire_slot() -> bool {
-    try_acquire_slot_with(&ACTIVE_THREADS, DEFAULT_MAX_CONCURRENT_SPAWNS)
+fn try_acquire_slot() -> Option<SlotGuard> {
+    try_acquire_slot_with(&ACTIVE_THREADS, DEFAULT_MAX_CONCURRENT_SPAWNS).then(|| SlotGuard)
 }
 
 fn try_acquire_slot_with(counter: &AtomicUsize, limit: usize) -> bool {
@@ -342,20 +440,31 @@ fn try_acquire_slot_with(counter: &AtomicUsize, limit: usize) -> bool {
 }
 
 fn release_slot_count() {
-    ACTIVE_THREADS.fetch_sub(1, Ordering::Release);
+    ACTIVE_THREADS.fetch_sub(1, Ordering::SeqCst);
+}
+
+fn arm_pending_wake() {
+    if WAKE_ARMED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        glib::idle_add_full(completion_priority(), drain_pending_tasks_source);
+    }
 }
 
 fn release_slot_and_wake_queue() {
     release_slot_count();
-    glib::MainContext::default().invoke(drain_pending_tasks);
+    if PENDING_COUNT.load(Ordering::SeqCst) > 0 {
+        arm_pending_wake();
+    }
 }
 
 /// RAII worker-slot release guard.
 ///
-/// The guard lives through the whole result lifecycle. Worker panics release it
-/// on the worker thread, while successful work moves it into the GLib idle
-/// callback so large results remain covered by the concurrency cap until the
-/// main loop has consumed them.
+/// Acquired before spawning the worker thread so spawn failures release the
+/// slot immediately. Inside the worker, [`WorkCleanup`] holds it and transfers
+/// it back to the main loop on both normal completion and panic unwinding, so
+/// slots stay accounted for until the main loop releases/consumes the entry.
 struct SlotGuard;
 
 impl Drop for SlotGuard {
@@ -364,63 +473,117 @@ impl Drop for SlotGuard {
     }
 }
 
-fn start_or_queue(task: PendingTask) {
-    if try_acquire_slot() {
-        task();
-        return;
+/// Worker-thread guard ensuring a panicking `work()` delivers `(id, slot_guard, None)`
+/// back to the main loop instead of dropping non-`Send` state off-thread.
+struct WorkCleanup {
+    id: u64,
+    slot_guard: Option<SlotGuard>,
+}
+
+impl Drop for WorkCleanup {
+    fn drop(&mut self) {
+        if let Some(slot_guard) = self.slot_guard.take() {
+            deliver(CompletedTask {
+                id: self.id,
+                slot_guard,
+                payload: None,
+            });
+        }
     }
-    PENDING_TASKS.with(|queue| queue.borrow_mut().push_back(task));
+}
+
+fn enqueue_pending_task(task: PendingTask) {
+    {
+        let mut queue = lock_pending_tasks();
+        queue.push_back(task);
+    }
+    PENDING_COUNT.fetch_add(1, Ordering::SeqCst);
+    if ACTIVE_THREADS.load(Ordering::SeqCst) < DEFAULT_MAX_CONCURRENT_SPAWNS {
+        arm_pending_wake();
+    }
+}
+
+fn drain_pending_tasks_source() -> glib::ControlFlow {
+    WAKE_ARMED.store(false, Ordering::SeqCst);
+    drain_pending_tasks();
+    if PENDING_COUNT.load(Ordering::SeqCst) > 0
+        && ACTIVE_THREADS.load(Ordering::SeqCst) < DEFAULT_MAX_CONCURRENT_SPAWNS
+    {
+        arm_pending_wake();
+    }
+    glib::ControlFlow::Break
+}
+
+fn pop_pending_task() -> Option<PendingTask> {
+    let task = lock_pending_tasks().pop_front();
+    if task.is_some() {
+        PENDING_COUNT.fetch_sub(1, Ordering::SeqCst);
+    }
+    task
+}
+
+fn requeue_pending_task(task: PendingTask) {
+    lock_pending_tasks().push_front(task);
+    PENDING_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
 fn drain_pending_tasks() {
-    loop {
-        let Some(task) = PENDING_TASKS.with(|queue| queue.borrow_mut().pop_front()) else {
-            break;
-        };
-        if try_acquire_slot() {
-            task();
+    while let Some(task) = pop_pending_task() {
+        if let Some(slot_guard) = try_acquire_slot() {
+            task(slot_guard);
         } else {
-            PENDING_TASKS.with(|queue| queue.borrow_mut().push_front(task));
+            requeue_pending_task(task);
             break;
         }
     }
 }
 
-fn start_worker<S, T, W, F>(state: S, work: W, then: F)
+fn start_worker<T, W>(slot_guard: SlotGuard, id: u64, work: W)
 where
-    S: 'static,
     T: Send + 'static,
     W: FnOnce() -> T + Send + 'static,
-    F: FnOnce(S, T) + 'static,
 {
-    let guarded_state = glib::thread_guard::ThreadGuard::new(state);
-    let guarded_then = glib::thread_guard::ThreadGuard::new(then);
-    std::thread::spawn(move || {
-        let slot_guard = SlotGuard;
+    let spawn_result = std::thread::Builder::new().spawn(move || {
+        let mut cleanup = WorkCleanup {
+            id,
+            slot_guard: Some(slot_guard),
+        };
         let result = work();
-        deliver(Box::new(move || {
-            let _slot_guard = slot_guard;
-            let state = guarded_state.into_inner();
-            let then = guarded_then.into_inner();
-            then(state, result);
-        }));
+        if let Some(slot_guard) = cleanup.slot_guard.take() {
+            deliver(CompletedTask {
+                id,
+                slot_guard,
+                payload: Some(Box::new(result)),
+            });
+        }
     });
+    if let Err(err) = spawn_result {
+        COMPLETION_SLAB.with(|slab| slab.borrow_mut().remove(&id));
+        panic!("gtk-lush-tasks: failed to spawn worker thread: {err}");
+    }
 }
 
 /// Run blocking work on a background thread and deliver its result on GLib's main loop.
 ///
-/// `state` is GTK-thread state that belongs to the completion callback. It is
-/// wrapped in `glib::thread_guard::ThreadGuard` before the worker starts, so the
-/// background thread can move the value without touching it. The value is
-/// recovered only inside the main-loop callback.
+/// `state` and `then` stay on the calling GTK thread inside a thread-local slab
+/// and are never moved onto or dropped on the worker thread. If `work` panics,
+/// the worker still returns the slot guard to the main loop so `state` and
+/// `then` drop cleanly on the GTK thread without aborting the process.
 ///
-/// If all worker slots are busy, the work waits in a main-thread FIFO and is
-/// started when an active result has been consumed by the GLib main loop.
+/// If all worker slots are busy, the work waits in a FIFO and is started from
+/// a coalesced [`completion_priority`] idle when an active result has been
+/// consumed by the GLib main loop.
 ///
 /// The result is delivered at [`completion_priority`], one completion per
 /// main-loop dispatch, in the order the workers finished; the delivery source
 /// yields to lower priorities after eight completions in a row or 16 ms of
 /// them (see [`completion_priority`]).
+///
+/// # Panics
+///
+/// Panics if spawning the worker thread fails, or on delivery if called from a
+/// non-main thread (whose task entry does not exist in the main thread's
+/// completion slab).
 pub fn spawn_blocking_then<S, T, W, F>(state: S, work: W, then: F)
 where
     S: 'static,
@@ -428,9 +591,25 @@ where
     W: FnOnce() -> T + Send + 'static,
     F: FnOnce(S, T) + 'static,
 {
-    start_or_queue(Box::new(move || {
-        start_worker(state, work, then);
-    }));
+    let id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
+    insert_slab_entry(
+        id,
+        Box::new(move |payload| {
+            if let Some(boxed) = payload {
+                let result = *boxed
+                    .downcast::<T>()
+                    .expect("gtk-lush-tasks: completion payload type mismatch");
+                then(state, result);
+            }
+        }),
+    );
+    if let Some(slot_guard) = try_acquire_slot() {
+        start_worker(slot_guard, id, work);
+    } else {
+        enqueue_pending_task(Box::new(move |slot_guard| {
+            start_worker(slot_guard, id, work);
+        }));
+    }
 }
 
 /// Run blocking work and call back only if the target object is still alive.
@@ -592,11 +771,22 @@ mod tests {
     }
 
     fn clear_pending_tasks() {
-        PENDING_TASKS.with(|queue| queue.borrow_mut().clear());
+        lock_pending_tasks().clear();
+        PENDING_COUNT.store(0, Ordering::SeqCst);
+        WAKE_ARMED.store(false, Ordering::SeqCst);
+        COMPLETION_RUN.set(CompletionRun::default());
+        COMPLETION_SLAB.with(|slab| slab.borrow_mut().clear());
+        if let Some((hop, deadline)) = YIELD_SOURCES.take() {
+            hop.remove();
+            deadline.remove();
+        }
+        let mut lane = lock_completions();
+        lane.queue.clear();
+        lane.armed = false;
     }
 
     fn pending_task_count() -> usize {
-        PENDING_TASKS.with(|queue| queue.borrow().len())
+        lock_pending_tasks().len()
     }
 
     #[test]
@@ -916,6 +1106,35 @@ mod tests {
     }
 
     #[cfg(feature = "completion-observer")]
+    type ObserverHook = fn(i64, i64);
+    #[cfg(feature = "completion-observer")]
+    static TEST_OBSERVER_CLAIMED: AtomicBool = AtomicBool::new(false);
+    #[cfg(feature = "completion-observer")]
+    static TEST_OBSERVER_HOOK: Mutex<Option<ObserverHook>> = Mutex::new(None);
+    #[cfg(feature = "completion-observer")]
+    fn shared_test_observer(start_us: i64, end_us: i64) {
+        if let Some(hook) = *TEST_OBSERVER_HOOK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
+            hook(start_us, end_us);
+        }
+    }
+    #[cfg(feature = "completion-observer")]
+    fn install_test_observer(hook: fn(i64, i64)) {
+        *TEST_OBSERVER_HOOK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(hook);
+        if !TEST_OBSERVER_CLAIMED.swap(true, Ordering::AcqRel) {
+            assert!(set_completion_observer(shared_test_observer));
+        }
+        assert!(
+            !set_completion_observer(shared_test_observer),
+            "the first observer stays"
+        );
+    }
+
+    #[cfg(feature = "completion-observer")]
     #[test]
     fn the_observer_reports_each_completion_span() {
         static SPANS: AtomicUsize = AtomicUsize::new(0);
@@ -926,11 +1145,7 @@ mod tests {
         let _counter_guard = lock_counter();
         clear_pending_tasks();
         ACTIVE_THREADS.store(0, Ordering::Relaxed);
-        assert!(set_completion_observer(observe));
-        assert!(
-            !set_completion_observer(observe),
-            "the first observer stays"
-        );
+        install_test_observer(observe);
         let (sender, receiver) = mpsc::channel();
         spawn_blocking_then(
             (),
@@ -941,6 +1156,9 @@ mod tests {
         );
         assert_eq!(pump_until(&receiver, Duration::from_secs(1)), Some(1));
         assert!(SPANS.load(Ordering::Relaxed) >= 1);
+        *TEST_OBSERVER_HOOK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         ACTIVE_THREADS.store(0, Ordering::Relaxed);
         clear_pending_tasks();
     }
@@ -959,6 +1177,428 @@ mod tests {
             longest_run <= COMPLETIONS_BEFORE_YIELD,
             "{longest_run} completions ran with no default-idle dispatch in between"
         );
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        clear_pending_tasks();
+    }
+
+    #[test]
+    fn panicking_worker_releases_slot_and_cleans_up_without_aborting() {
+        let _counter_guard = lock_counter();
+        clear_pending_tasks();
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+
+        let dropped_on_main = Rc::new(Cell::new(false));
+        struct MainDropProbe(Rc<Cell<bool>>);
+        impl Drop for MainDropProbe {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let probe = MainDropProbe(Rc::clone(&dropped_on_main));
+        spawn_blocking_then(
+            probe,
+            || -> i32 { panic!("intentional worker panic") },
+            |_, _| {},
+        );
+        assert!(
+            !dropped_on_main.get(),
+            "main-thread state must wait in the main-thread slab rather than dropping synchronously"
+        );
+
+        let (sender, receiver) = mpsc::channel();
+        // Wait for the panicking worker to deliver its cleanup, then pump.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !dropped_on_main.get() && Instant::now() < deadline {
+            while glib::MainContext::default().iteration(false) {}
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            dropped_on_main.get(),
+            "main-thread state should drop on main loop after worker panic"
+        );
+        assert_eq!(ACTIVE_THREADS.load(Ordering::Relaxed), 0);
+
+        spawn_blocking_then(
+            (),
+            || 99,
+            move |(), v| {
+                let _ = sender.send(v);
+            },
+        );
+        assert_eq!(pump_until(&receiver, Duration::from_secs(1)), Some(99));
+        assert_eq!(ACTIVE_THREADS.load(Ordering::Relaxed), 0);
+        clear_pending_tasks();
+    }
+
+    fn wait_until_open(gate: &(Mutex<bool>, std::sync::Condvar)) {
+        let (lock, cvar) = gate;
+        let guard = lock.lock().expect("test gate mutex poisoned");
+        let guard = cvar
+            .wait_while(guard, |open| !*open)
+            .expect("test gate condvar poisoned");
+        drop(guard);
+    }
+
+    fn open_gate(gate: &(Mutex<bool>, std::sync::Condvar)) {
+        let (lock, cvar) = gate;
+        *lock.lock().expect("test gate mutex poisoned") = true;
+        cvar.notify_all();
+    }
+
+    #[test]
+    fn real_saturation_drains_fifo_automatically_without_manual_counter_edits() {
+        let _counter_guard = lock_counter();
+        clear_pending_tasks();
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+
+        let total = DEFAULT_MAX_CONCURRENT_SPAWNS + 4;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let (done_tx, done_rx) = mpsc::channel();
+
+        for i in 0..total {
+            let entered_tx = entered_tx.clone();
+            let release = std::sync::Arc::clone(&release);
+            let done_tx = done_tx.clone();
+            spawn_blocking_then(
+                i,
+                move || {
+                    if i < DEFAULT_MAX_CONCURRENT_SPAWNS {
+                        let _ = entered_tx.send(i);
+                        wait_until_open(&release);
+                    }
+                    i
+                },
+                move |expected, actual| {
+                    assert_eq!(expected, actual);
+                    let _ = done_tx.send(actual);
+                },
+            );
+        }
+
+        for _ in 0..DEFAULT_MAX_CONCURRENT_SPAWNS {
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("first 8 workers should start concurrently");
+        }
+        assert_eq!(active_worker_count(), DEFAULT_MAX_CONCURRENT_SPAWNS);
+        assert_eq!(pending_task_count(), 4);
+
+        open_gate(&release);
+
+        let mut completed = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while completed.len() < total && Instant::now() < deadline {
+            while glib::MainContext::default().iteration(false) {}
+            while let Ok(v) = done_rx.try_recv() {
+                completed.push(v);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(completed.len(), total);
+        assert_eq!(pending_task_count(), 0);
+        assert_eq!(active_worker_count(), 0);
+        clear_pending_tasks();
+    }
+
+    #[cfg(feature = "completion-observer")]
+    #[test]
+    fn observer_span_does_not_enclose_queued_task_spawns() {
+        static PENDING_AT_OBSERVER: AtomicUsize = AtomicUsize::new(usize::MAX);
+        fn record_pending(_start_us: i64, _end_us: i64) {
+            PENDING_AT_OBSERVER.store(pending_task_count(), Ordering::SeqCst);
+        }
+
+        let _counter_guard = lock_counter();
+        clear_pending_tasks();
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        install_test_observer(record_pending);
+        PENDING_AT_OBSERVER.store(usize::MAX, Ordering::SeqCst);
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let gate0 = std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let rest_gate = std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+
+        for i in 0..DEFAULT_MAX_CONCURRENT_SPAWNS {
+            let entered_tx = entered_tx.clone();
+            let gate = if i == 0 {
+                std::sync::Arc::clone(&gate0)
+            } else {
+                std::sync::Arc::clone(&rest_gate)
+            };
+            let done_tx = done_tx.clone();
+            spawn_blocking_then(
+                (),
+                move || {
+                    let _ = entered_tx.send(());
+                    wait_until_open(&gate);
+                    i
+                },
+                move |(), v| {
+                    let _ = done_tx.send(v);
+                },
+            );
+        }
+        for _ in 0..DEFAULT_MAX_CONCURRENT_SPAWNS {
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("worker should enter gate");
+        }
+        // Saturate with one queued task.
+        spawn_blocking_then(
+            (),
+            || 999,
+            move |(), v| {
+                let _ = done_tx.send(v);
+            },
+        );
+        assert_eq!(pending_task_count(), 1);
+
+        // Release worker 0 and pump until worker 0's completion is delivered.
+        open_gate(&gate0);
+        assert_eq!(pump_until(&done_rx, Duration::from_secs(2)), Some(0));
+        // Inside worker 0's completion-observer span, the queued task must NOT
+        // have been popped/spawned inline yet.
+        assert_eq!(
+            PENDING_AT_OBSERVER.load(Ordering::SeqCst),
+            1,
+            "drain_pending_tasks must not run inline inside run_completion observer span"
+        );
+
+        // Release remaining workers and drain everything.
+        open_gate(&rest_gate);
+        let mut received = 1;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while received < DEFAULT_MAX_CONCURRENT_SPAWNS + 1 && Instant::now() < deadline {
+            while glib::MainContext::default().iteration(false) {}
+            while done_rx.try_recv().is_ok() {
+                received += 1;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(received, DEFAULT_MAX_CONCURRENT_SPAWNS + 1);
+        *TEST_OBSERVER_HOOK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        clear_pending_tasks();
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn self_chaining_completions_yield_to_lower_priorities() {
+        const SELF_CHAIN_TASKS: usize = 32;
+        let _counter_guard = lock_counter();
+        clear_pending_tasks();
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+
+        let done = Rc::new(Cell::new(0usize));
+        let dispatches = Rc::new(Cell::new(0u32));
+        let run = Rc::new(Cell::new(0usize));
+        let longest_run = Rc::new(Cell::new(0usize));
+        {
+            let (done, dispatches, run) =
+                (Rc::clone(&done), Rc::clone(&dispatches), Rc::clone(&run));
+            glib::idle_add_local_full(glib::Priority::from(VALIDATE_PRIORITY), move || {
+                if done.get() >= SELF_CHAIN_TASKS {
+                    return glib::ControlFlow::Break;
+                }
+                if done.get() > 0 {
+                    dispatches.set(dispatches.get() + 1);
+                }
+                run.set(0);
+                glib::ControlFlow::Continue
+            });
+        }
+
+        let (worker_done_tx, worker_done_rx) = mpsc::channel();
+        fn spawn_next(
+            remaining: usize,
+            done: Rc<Cell<usize>>,
+            run: Rc<Cell<usize>>,
+            longest_run: Rc<Cell<usize>>,
+            worker_done_tx: mpsc::Sender<()>,
+        ) {
+            let tx = worker_done_tx.clone();
+            spawn_blocking_then(
+                (),
+                move || {
+                    let _ = tx.send(());
+                },
+                move |(), ()| {
+                    done.set(done.get() + 1);
+                    run.set(run.get() + 1);
+                    longest_run.set(longest_run.get().max(run.get()));
+                    if remaining > 1 {
+                        spawn_next(remaining - 1, done, run, longest_run, worker_done_tx);
+                    }
+                },
+            );
+        }
+
+        spawn_next(
+            SELF_CHAIN_TASKS,
+            Rc::clone(&done),
+            Rc::clone(&run),
+            Rc::clone(&longest_run),
+            worker_done_tx,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while done.get() < SELF_CHAIN_TASKS && Instant::now() < deadline {
+            // Wait until a completion is queued (either left queued after a
+            // yield or delivered by the active chained worker) before pumping,
+            // so `VALIDATE_PRIORITY` cannot run vacuously on an idle loop.
+            while lock_completions().queue.is_empty() && Instant::now() < deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let _ = worker_done_rx.recv_timeout(remaining.min(Duration::from_millis(10)));
+                std::thread::yield_now();
+            }
+            if !glib::MainContext::default().iteration(false) {
+                std::thread::yield_now();
+            }
+        }
+        assert_eq!(done.get(), SELF_CHAIN_TASKS);
+        iterate(8);
+        assert!(
+            dispatches.get() > 0,
+            "validation idle ran no batch during a {SELF_CHAIN_TASKS}-task self-chain"
+        );
+        assert!(
+            longest_run.get() <= COMPLETIONS_BEFORE_YIELD,
+            "{} self-chaining completions ran with no yield",
+            longest_run.get()
+        );
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        clear_pending_tasks();
+    }
+
+    #[test]
+    fn off_main_thread_spawn_blocking_then_fails_cleanly_on_slab_miss() {
+        let _counter_guard = lock_counter();
+        clear_pending_tasks();
+        ACTIVE_THREADS.store(0, Ordering::Relaxed);
+        // Drain any leftover completions from earlier tests.
+        {
+            let mut lane = lock_completions();
+            lane.queue.clear();
+            lane.armed = false;
+        }
+
+        // (1) Unsaturated off-main-thread call.
+        std::thread::spawn(|| {
+            spawn_blocking_then((), || 1, |(), _| {});
+        })
+        .join()
+        .expect("off-main-thread helper join failed");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while lock_completions().queue.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            !lock_completions().queue.is_empty(),
+            "unsaturated off-main-thread work should reach delivery queue"
+        );
+        let err = panic::catch_unwind(|| {
+            let _ = deliver_one_completion();
+        })
+        .expect_err("unsaturated off-main-thread delivery must panic on slab miss");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("slab"),
+            "expected explicit slab-miss panic message, got: {msg}"
+        );
+        iterate(2);
+
+        // (2) Saturated off-main-thread call.
+        struct GateGuard<'a>(&'a (Mutex<bool>, std::sync::Condvar));
+        impl Drop for GateGuard<'_> {
+            fn drop(&mut self) {
+                open_gate(self.0);
+            }
+        }
+
+        let gate = std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let _gate_guard = GateGuard(&gate);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        for _ in 0..DEFAULT_MAX_CONCURRENT_SPAWNS {
+            let gate = std::sync::Arc::clone(&gate);
+            let entered_tx = entered_tx.clone();
+            spawn_blocking_then(
+                (),
+                move || {
+                    let _ = entered_tx.send(());
+                    wait_until_open(&gate);
+                },
+                |(), ()| {},
+            );
+        }
+        for _ in 0..DEFAULT_MAX_CONCURRENT_SPAWNS {
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("saturating worker should enter gate");
+        }
+
+        let saturated_gate = std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let _saturated_gate_guard = GateGuard(&saturated_gate);
+        let (sat_entered_tx, sat_entered_rx) = mpsc::channel();
+        let sat_gate_clone = std::sync::Arc::clone(&saturated_gate);
+        std::thread::spawn(move || {
+            spawn_blocking_then(
+                (),
+                move || {
+                    let _ = sat_entered_tx.send(());
+                    wait_until_open(&sat_gate_clone);
+                },
+                |(), _| {},
+            );
+        })
+        .join()
+        .expect("saturated off-main-thread helper join failed");
+
+        // Release the 8 blocking workers and pump MainContext so their completions
+        // release slots and wake the queued off-main-thread task.
+        open_gate(&gate);
+        pump_until(&sat_entered_rx, Duration::from_secs(2))
+            .expect("saturated off-main-thread task should be drained by main thread");
+        // Now drain any remaining legitimate deliveries before letting the off-main-thread task finish.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while active_worker_count() > 1 && Instant::now() < deadline {
+            while glib::MainContext::default().iteration(false) {}
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(active_worker_count(), 1);
+        // Reset the 8-completion aging counter from the 8 gate workers so the
+        // 9th delivery executes immediately instead of yielding first.
+        COMPLETION_RUN.set(CompletionRun::default());
+        open_gate(&saturated_gate);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while lock_completions().queue.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            !lock_completions().queue.is_empty(),
+            "saturated off-main-thread task should reach completion queue"
+        );
+        let err = panic::catch_unwind(|| {
+            let _ = deliver_one_completion();
+        })
+        .expect_err("saturated off-main-thread delivery must panic on slab miss");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("slab"),
+            "expected explicit slab-miss panic message, got: {msg}"
+        );
+        iterate(2);
         ACTIVE_THREADS.store(0, Ordering::Relaxed);
         clear_pending_tasks();
     }

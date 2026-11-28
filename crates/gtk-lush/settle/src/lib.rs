@@ -117,20 +117,23 @@ impl Debounce {
     }
 
     /// Advance the debounce generation for immediate or async work that should
-    /// supersede any pending timer.
+    /// supersede any pending timer, removing any pending GLib source.
     #[must_use]
     pub fn advance(&self) -> TimerToken {
-        self.state.gate.advance()
+        self.invalidate()
     }
 
     /// Invalidate pending callbacks without scheduling a replacement, and
     /// remove the pending source.
     #[must_use]
     pub fn invalidate(&self) -> TimerToken {
-        let scheduled = self.state.take_scheduled();
-        let token = self.state.gate.invalidate();
-        SupersedingTimerState::remove_source(scheduled);
-        token
+        self.state.invalidate()
+    }
+
+    /// Report whether a scheduled callback is currently armed.
+    #[must_use]
+    pub fn is_armed(&self) -> bool {
+        self.state.is_armed()
     }
 
     /// Check whether a previously captured token is still current.
@@ -144,27 +147,41 @@ impl Debounce {
     /// The target is captured weakly. If the target is destroyed or a newer
     /// generation is scheduled before the timer fires, the callback does not
     /// run.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::cell::Cell;
+    /// use std::rc::Rc;
+    /// use std::time::{Duration, Instant};
+    ///
+    /// use glib::Object;
+    /// use gtk_lush_settle::Debounce;
+    ///
+    /// let debounce = Debounce::new();
+    /// let ran = Rc::new(Cell::new(false));
+    /// let ran_flag = Rc::clone(&ran);
+    /// {
+    ///     let target = Object::new::<Object>();
+    ///     let _ = debounce.schedule(&target, Duration::from_millis(5), move |_, _| {
+    ///         ran_flag.set(true);
+    ///     });
+    ///     assert!(debounce.is_armed());
+    /// }
+    /// let deadline = Instant::now() + Duration::from_millis(100);
+    /// while debounce.is_armed() && Instant::now() < deadline {
+    ///     while glib::MainContext::default().iteration(false) {}
+    ///     std::thread::sleep(Duration::from_millis(1));
+    /// }
+    /// assert!(!ran.get());
+    /// assert!(!debounce.is_armed());
+    /// ```
     pub fn schedule<T, F>(&self, target: &T, delay: Duration, callback: F) -> TimerToken
     where
         T: IsA<Object> + Clone + 'static,
         F: FnOnce(T, TimerToken) + 'static,
     {
-        let scheduled = self.state.take_scheduled();
-        let token = self.state.gate.advance();
-        // Removing a source synchronously drops its callback captures. Advance
-        // first so a debounce re-entered from a destructor stays the newest.
-        SupersedingTimerState::remove_source(scheduled);
-        if !self.state.gate.is_current(token) {
-            return token;
-        }
-        let state = Rc::clone(&self.state);
-        let target_weak = target.downgrade();
-        let source_id = glib::timeout_add_local_once(delay, move || {
-            state.forget_if_current(token);
-            run_if_current(&target_weak, &state.gate, token, callback);
-        });
-        self.state.scheduled.replace(Some((token, source_id)));
-        token
+        SupersedingTimerState::schedule(&self.state, target, delay, callback)
     }
 }
 
@@ -184,6 +201,40 @@ impl SupersedingTimerState {
         if let Some((_token, source_id)) = scheduled {
             source_id.remove();
         }
+    }
+
+    fn is_armed(&self) -> bool {
+        self.scheduled.borrow().is_some()
+    }
+
+    fn invalidate(&self) -> TimerToken {
+        let scheduled = self.take_scheduled();
+        let token = self.gate.invalidate();
+        Self::remove_source(scheduled);
+        token
+    }
+
+    fn schedule<T, F>(state: &Rc<Self>, target: &T, delay: Duration, callback: F) -> TimerToken
+    where
+        T: IsA<Object> + Clone + 'static,
+        F: FnOnce(T, TimerToken) + 'static,
+    {
+        let scheduled = state.take_scheduled();
+        let token = state.gate.advance();
+        // Removing a source synchronously drops its callback captures. Advance
+        // first so a timer operation re-entered from a destructor stays the newest.
+        Self::remove_source(scheduled);
+        if !state.gate.is_current(token) {
+            return token;
+        }
+        let weak_state = Rc::clone(state);
+        let target_weak = target.downgrade();
+        let source_id = glib::timeout_add_local_once(delay, move || {
+            weak_state.forget_if_current(token);
+            run_if_current(&target_weak, &weak_state.gate, token, callback);
+        });
+        state.scheduled.replace(Some((token, source_id)));
+        token
     }
 
     fn forget_if_current(&self, token: TimerToken) {
@@ -222,31 +273,19 @@ impl SupersedingTimer {
         T: IsA<Object> + Clone + 'static,
         F: FnOnce(T, TimerToken) + 'static,
     {
-        let scheduled = self.state.take_scheduled();
-        let token = self.state.gate.advance();
-        // Removing a source synchronously drops its callback captures. Advance first
-        // so a timer operation re-entered from a destructor remains the newest one.
-        SupersedingTimerState::remove_source(scheduled);
-        if !self.state.gate.is_current(token) {
-            return token;
-        }
-        let state = Rc::clone(&self.state);
-        let target_weak = target.downgrade();
-        let source_id = glib::timeout_add_local_once(delay, move || {
-            state.forget_if_current(token);
-            run_if_current(&target_weak, &state.gate, token, callback);
-        });
-        self.state.scheduled.replace(Some((token, source_id)));
-        token
+        SupersedingTimerState::schedule(&self.state, target, delay, callback)
     }
 
     /// Invalidate pending cleanup work without scheduling a replacement.
     #[must_use]
     pub fn invalidate(&self) -> TimerToken {
-        let scheduled = self.state.take_scheduled();
-        let token = self.state.gate.invalidate();
-        SupersedingTimerState::remove_source(scheduled);
-        token
+        self.state.invalidate()
+    }
+
+    /// Report whether an armed callback is currently pending.
+    #[must_use]
+    pub fn is_armed(&self) -> bool {
+        self.state.is_armed()
     }
 
     /// Check whether a previously captured arm token is still current.
@@ -256,15 +295,53 @@ impl SupersedingTimer {
     }
 }
 
+/// Shared state for a quiet-window repair burst and its armed GLib sources.
+#[derive(Debug, Default)]
+struct SettleBurstState {
+    gate: GenerationGate,
+    pending: Cell<bool>,
+    next_source_id: Cell<u64>,
+    sources: RefCell<Vec<(u64, glib::SourceId)>>,
+}
+
+impl SettleBurstState {
+    fn next_source_token(&self) -> u64 {
+        let id = self.next_source_id.get().wrapping_add(1);
+        self.next_source_id.set(id);
+        id
+    }
+
+    fn push_source(&self, id: u64, source_id: glib::SourceId) {
+        self.sources.borrow_mut().push((id, source_id));
+    }
+
+    fn forget_source(&self, id: u64) {
+        let mut sources = self.sources.borrow_mut();
+        if let Some(pos) = sources.iter().position(|(entry_id, _)| *entry_id == id) {
+            sources.swap_remove(pos);
+        }
+    }
+
+    fn take_sources(&self) -> Vec<(u64, glib::SourceId)> {
+        std::mem::take(&mut *self.sources.borrow_mut())
+    }
+
+    fn remove_sources(sources: Vec<(u64, glib::SourceId)>) {
+        for (_, source_id) in sources {
+            source_id.remove();
+        }
+    }
+}
+
 /// Tracks a quiet-window repair burst and exposes whether repair is pending.
 ///
 /// `SettleBurst` is for layout or rendering storms where observers must wait
 /// until the final repair completes. Pending state remains true until the
-/// current `SettleHandle` finishes.
+/// current `SettleHandle` finishes, and opening, extending, or clearing a burst
+/// eagerly removes all armed primary and follow-up GLib sources.
 #[derive(Clone, Debug, Default)]
 pub struct SettleBurst {
-    gate: Rc<GenerationGate>,
-    pending: Rc<Cell<bool>>,
+    state: Rc<SettleBurstState>,
 }
 
 impl SettleBurst {
@@ -277,17 +354,26 @@ impl SettleBurst {
     /// Schedule or extend the burst and run `callback` after the quiet window.
     ///
     /// The returned handle lets multi-stage repairs clear pending state only
-    /// after their actual final repair completes.
+    /// after their actual final repair completes. If the weak target drops
+    /// before the callback fires, `pending()` clears if the handle is still
+    /// current.
     pub fn schedule<T, F>(&self, target: &T, delay: Duration, callback: F) -> SettleHandle
     where
         T: IsA<Object> + Clone + 'static,
         F: FnOnce(T, SettleHandle) + 'static,
     {
         let handle = self.begin();
+        if !handle.is_current() {
+            return handle;
+        }
         let callback_handle = handle.clone();
+        let state = Rc::clone(&self.state);
+        let source_token = self.state.next_source_token();
         let target_weak = target.downgrade();
-        glib::timeout_add_local_once(delay, move || {
+        let source_id = glib::timeout_add_local_once(delay, move || {
+            state.forget_source(source_token);
             let Some(target) = target_weak.upgrade() else {
+                callback_handle.finish_if_current();
                 return;
             };
             if !callback_handle.is_current() {
@@ -295,17 +381,22 @@ impl SettleBurst {
             }
             callback(target, callback_handle);
         });
+        self.state.push_source(source_token, source_id);
         handle
     }
 
-    /// Begin or supersede a settle burst without installing a GLib source.
+    /// Begin or supersede a settle burst without installing a GLib source,
+    /// removing any earlier armed primary and follow-up sources.
     #[must_use]
     pub fn begin(&self) -> SettleHandle {
-        self.pending.set(true);
-        let token = self.gate.advance();
+        let sources = self.state.take_sources();
+        self.state.pending.set(true);
+        let token = self.state.gate.advance();
+        // Advance and drain before removing sources so re-entrant callbacks
+        // from destructors keep their newer state intact.
+        SettleBurstState::remove_sources(sources);
         SettleHandle {
-            gate: Rc::clone(&self.gate),
-            pending: Rc::clone(&self.pending),
+            state: Rc::clone(&self.state),
             token,
         }
     }
@@ -313,14 +404,17 @@ impl SettleBurst {
     /// Return whether the burst is currently blocking readiness.
     #[must_use]
     pub fn pending(&self) -> bool {
-        self.pending.get()
+        self.state.pending.get()
     }
 
-    /// Invalidate callbacks and clear pending state when the workflow disappears.
+    /// Invalidate callbacks, remove all armed primary and follow-up GLib
+    /// sources, and clear pending state when the workflow disappears.
     #[must_use]
     pub fn clear(&self) -> TimerToken {
-        let token = self.gate.invalidate();
-        self.pending.set(false);
+        let sources = self.state.take_sources();
+        let token = self.state.gate.invalidate();
+        self.state.pending.set(false);
+        SettleBurstState::remove_sources(sources);
         token
     }
 }
@@ -332,8 +426,7 @@ impl SettleBurst {
 /// observing a settled-before-repaired state.
 #[derive(Clone, Debug)]
 pub struct SettleHandle {
-    gate: Rc<GenerationGate>,
-    pending: Rc<Cell<bool>>,
+    state: Rc<SettleBurstState>,
     token: TimerToken,
 }
 
@@ -347,13 +440,13 @@ impl SettleHandle {
     /// Report whether no newer burst has superseded this handle.
     #[must_use]
     pub fn is_current(&self) -> bool {
-        self.gate.is_current(self.token)
+        self.state.gate.is_current(self.token)
     }
 
     /// Clear pending state only if this handle still owns the latest generation.
     pub fn finish_if_current(&self) {
         if self.is_current() {
-            self.pending.set(false);
+            self.state.pending.set(false);
         }
     }
 
@@ -361,21 +454,31 @@ impl SettleHandle {
     ///
     /// This is for multi-step repairs inside one settle burst, not a general
     /// task scheduler. If a newer burst starts first, the follow-up no-ops.
+    /// If the weak target drops before the follow-up fires, `pending()` clears
+    /// when this handle is still current.
     pub fn schedule_follow_up<T, F>(&self, target: &T, delay: Duration, callback: F)
     where
         T: IsA<Object> + Clone + 'static,
         F: FnOnce(T) + 'static,
     {
+        if !self.is_current() {
+            return;
+        }
         let handle = self.clone();
+        let state = Rc::clone(&self.state);
+        let source_token = self.state.next_source_token();
         let target_weak = target.downgrade();
-        glib::timeout_add_local_once(delay, move || {
+        let source_id = glib::timeout_add_local_once(delay, move || {
+            state.forget_source(source_token);
             let Some(target) = target_weak.upgrade() else {
+                handle.finish_if_current();
                 return;
             };
             if handle.is_current() {
                 callback(target);
             }
         });
+        self.state.push_source(source_token, source_id);
     }
 }
 
@@ -385,6 +488,7 @@ mod tests {
     use std::rc::Rc;
     use std::sync::{Mutex, MutexGuard};
 
+    #[cfg(feature = "property-tests")]
     use proptest::prelude::*;
 
     use super::*;
@@ -668,7 +772,187 @@ mod tests {
         assert_eq!(nested_drops.get(), 1);
     }
 
+    fn pump_until_flag(flag: &Cell<bool>, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while !flag.get() && std::time::Instant::now() < deadline {
+            while glib::MainContext::default().iteration(false) {}
+            if flag.get() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        flag.get()
+    }
+
+    #[test]
+    fn debounce_schedule_fires_on_main_loop_and_replaces_eagerly() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let debounce = Debounce::new();
+        let target = Object::new::<Object>();
+        assert!(!debounce.is_armed());
+
+        let first_ran = Rc::new(Cell::new(false));
+        let second_ran = Rc::new(Cell::new(false));
+        let first_flag = Rc::clone(&first_ran);
+        let second_flag = Rc::clone(&second_ran);
+        let drops = Rc::new(Cell::new(0));
+        let probe = DropProbe(Rc::clone(&drops));
+
+        let _ = debounce.schedule(&target, Duration::from_millis(5), move |_, _| {
+            let _probe = probe;
+            first_flag.set(true);
+        });
+        assert!(debounce.is_armed());
+
+        let _ = debounce.schedule(&target, Duration::from_millis(5), move |_, _| {
+            second_flag.set(true);
+        });
+        assert_eq!(drops.get(), 1);
+        assert!(debounce.is_armed());
+
+        assert!(pump_until_flag(&second_ran, Duration::from_secs(1)));
+        assert!(!first_ran.get());
+        assert!(!debounce.is_armed());
+    }
+
+    #[test]
+    fn debounce_advance_removes_pending_source_and_disarms() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let debounce = Debounce::new();
+        let target = Object::new::<Object>();
+        let drops = Rc::new(Cell::new(0));
+        let probe = DropProbe(Rc::clone(&drops));
+
+        let _ = debounce.schedule(&target, Duration::from_secs(60), move |_, _| {
+            let _probe = probe;
+        });
+        assert!(debounce.is_armed());
+
+        let _ = debounce.advance();
+        assert_eq!(
+            drops.get(),
+            1,
+            "Debounce::advance() must remove the superseded GLib source"
+        );
+        assert!(!debounce.is_armed());
+    }
+
+    #[test]
+    fn superseding_timer_arm_fires_on_main_loop_and_tracks_is_armed() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let timer = SupersedingTimer::new();
+        let target = Object::new::<Object>();
+        assert!(!timer.is_armed());
+
+        let ran = Rc::new(Cell::new(false));
+        let ran_flag = Rc::clone(&ran);
+        let _ = timer.arm(&target, Duration::from_millis(5), move |_, _| {
+            ran_flag.set(true);
+        });
+        assert!(timer.is_armed());
+
+        assert!(pump_until_flag(&ran, Duration::from_secs(1)));
+        assert!(!timer.is_armed());
+    }
+
+    #[test]
+    fn settle_burst_schedule_and_follow_up_fire_and_remove_sources_on_begin_and_clear() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let burst = SettleBurst::new();
+        let target = Object::new::<Object>();
+
+        // (1) begin() / schedule() removes superseded primary source eagerly.
+        let drops = Rc::new(Cell::new(0));
+        let probe = DropProbe(Rc::clone(&drops));
+        let _ = burst.schedule(&target, Duration::from_secs(60), move |_, _| {
+            let _probe = probe;
+        });
+        let _ = burst.begin();
+        assert_eq!(
+            drops.get(),
+            1,
+            "SettleBurst::begin() must remove earlier scheduled primary sources"
+        );
+        let _ = burst.clear();
+
+        // (2) schedule() + schedule_follow_up() fire on MainContext and clear removes follow-up sources.
+        let follow_up_ran = Rc::new(Cell::new(false));
+        let follow_up_flag = Rc::clone(&follow_up_ran);
+        let _ = burst.schedule(&target, Duration::from_millis(5), move |target, handle| {
+            assert!(handle.is_current());
+            let finish_handle = handle.clone();
+            handle.schedule_follow_up(&target, Duration::from_millis(5), move |_| {
+                follow_up_flag.set(true);
+                finish_handle.finish_if_current();
+            });
+        });
+        assert!(burst.pending());
+        assert!(pump_until_flag(&follow_up_ran, Duration::from_secs(1)));
+        assert!(!burst.pending());
+
+        // (3) clear() removes armed follow-up sources immediately.
+        let follow_drops = Rc::new(Cell::new(0));
+        let follow_probe = DropProbe(Rc::clone(&follow_drops));
+        let handle = burst.begin();
+        handle.schedule_follow_up(&target, Duration::from_secs(60), move |_| {
+            let _probe = follow_probe;
+        });
+        let _ = burst.clear();
+        assert_eq!(
+            follow_drops.get(),
+            1,
+            "SettleBurst::clear() must remove armed follow-up sources"
+        );
+        assert!(!burst.pending());
+    }
+
+    #[test]
+    fn settle_burst_clears_pending_when_target_drops_before_dispatch() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let burst = SettleBurst::new();
+        let ran = Rc::new(Cell::new(false));
+        let ran_flag = Rc::clone(&ran);
+        {
+            let target = Object::new::<Object>();
+            let _ = burst.schedule(&target, Duration::from_millis(5), move |_, handle| {
+                ran_flag.set(true);
+                handle.finish_if_current();
+            });
+        }
+        assert!(burst.pending());
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while burst.pending() && std::time::Instant::now() < deadline {
+            while glib::MainContext::default().iteration(false) {}
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            !burst.pending(),
+            "dropping the weak target before dispatch must clear pending()"
+        );
+        assert!(!ran.get());
+    }
+
+    #[cfg(feature = "property-tests")]
+    const DEFAULT_PROPERTY_CASES: u32 = 64;
+    #[cfg(feature = "property-tests")]
+    const MAX_PROPERTY_CASES: u32 = 4096;
+
+    #[cfg(feature = "property-tests")]
+    fn configured_case_count() -> u32 {
+        std::env::var("LUSHTEXT_PROPTEST_CASES")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|cases| *cases > 0)
+            .map_or(DEFAULT_PROPERTY_CASES, |cases| {
+                cases.min(MAX_PROPERTY_CASES)
+            })
+    }
+
+    #[cfg(feature = "property-tests")]
     proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(configured_case_count()))]
+
         #[test]
         fn latest_generation_is_current_after_any_advances(advance_count in 1u8..64) {
             let gate = GenerationGate::default();

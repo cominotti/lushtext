@@ -36,11 +36,21 @@ assert_eq!(hits.get(), 1);
 - `SignalBag` owns `SignalHandlerId` values returned by gtk-rs `connect_*`
   calls. Sources are held weakly so the bag can safely outlive a widget or
   object that has already been finalized.
+- `SignalSlot` owns at most one replaceable weak-source `SignalHandlerId`
+  without a heap `Vec` allocation; `replace()` disconnects any prior live
+  handler before storing the new one, and `is_connected()` reports whether a
+  live registration is held.
 - `BindingBag` owns `glib::Binding` values and unbinds them on `clear()` or
   drop. It fits recycled list rows and widgets that rebind projections.
 - `RegistrationBag` owns explicit one-shot cleanup callbacks for controller,
   row-local, or transient registrations that are not represented by a signal id
   or binding.
+
+All containers drain in FIFO order before running disconnect/unbind/cleanup
+callbacks so destructors can re-entrantly call `clear()`, `track()`, or
+`replace()`. Widget owners should still clear bags/slots in `dispose()` rather
+than waiting for `finalize()` if external strong references keep a disposed
+source alive.
 
 Each bag is intentionally simple. It does not wrap the gtk-rs signal API,
 invent broad `connect_*` traits, own GTK control flow, or hide where callbacks

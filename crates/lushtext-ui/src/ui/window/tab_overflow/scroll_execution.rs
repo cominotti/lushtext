@@ -337,30 +337,22 @@ impl LushtextWindow {
     }
 
     fn arm_tab_scroll_repeat(&self, direction: ScrollDirection, delay: Duration) {
-        let window_weak = self.downgrade();
-        let source = glib::timeout_add_local_once(delay, move || {
-            if let Some(window) = window_weak.upgrade() {
-                // The source has dispatched: forget its id without removing it.
-                let _dispatched = window.imp().tab_overflow.scroll.borrow_mut().repeat.take();
-                if window.step_tab_strip(direction) {
-                    window.arm_tab_scroll_repeat(direction, repeat_interval());
-                }
+        let repeat = self.imp().tab_overflow.scroll.borrow().repeat.clone();
+        let _ = repeat.arm(self, delay, move |window, _| {
+            if window.step_tab_strip(direction) {
+                window.arm_tab_scroll_repeat(direction, repeat_interval());
             }
         });
-        self.imp()
-            .tab_overflow
-            .scroll
-            .borrow_mut()
-            .repeat
-            .replace(source);
     }
 
     /// Stage: the hold ended (release, gesture cancel, or the button hiding).
     /// The step in flight finishes; no further step starts. Returns whether
     /// a repeat was pending.
     pub(super) fn end_tab_scroll_hold(&self) -> bool {
-        let repeat = self.imp().tab_overflow.scroll.borrow_mut().repeat.take();
-        repeat.map(glib::SourceId::remove).is_some()
+        let repeat = self.imp().tab_overflow.scroll.borrow().repeat.clone();
+        let was_armed = repeat.is_armed();
+        let _ = repeat.invalidate();
+        was_armed
     }
 
     /// Inversion terminal: the strip's own input started, or is about to

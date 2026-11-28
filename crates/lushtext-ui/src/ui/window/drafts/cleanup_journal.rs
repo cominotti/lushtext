@@ -46,15 +46,10 @@ impl LushtextWindow {
         let drafts = &self.imp().drafts;
         drafts.orphan_cleanup_failure_streak.set(0);
         drafts.clear_orphan_cleanup_pending_offset();
-        drafts.set_orphan_cleanup_timer_pending(true);
         drafts.orphan_cleanup_timer.arm(
             self,
             orphan_cleanup_start_delay(),
             move |window, _| {
-                window
-                    .imp()
-                    .drafts
-                    .set_orphan_cleanup_timer_pending(false);
                 // Eager strings can be released after the ordinary restore window,
                 // but compact lazy markers must survive slow file loads so they
                 // cannot bypass the serialized admission queue.
@@ -237,12 +232,10 @@ impl LushtextWindow {
     }
 
     pub(super) fn arm_orphan_cleanup_follow_up(&self, manifest_offset: usize, delay: Duration) {
-        self.imp().drafts.set_orphan_cleanup_timer_pending(true);
         self.imp()
             .drafts
             .orphan_cleanup_timer
             .arm(self, delay, move |window, _| {
-                window.imp().drafts.set_orphan_cleanup_timer_pending(false);
                 window.run_orphan_cleanup_pass(manifest_offset);
             });
     }

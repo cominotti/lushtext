@@ -219,11 +219,36 @@ scan_visual_logs() {
     for log_path in "${log_paths[@]}"; do
         [[ -f "$log_path" ]] || continue
         printf 'scanned=%s\n' "$log_path" >>"$report"
-        grep -E -i \
-            '(Gtk|Gdk|GSK|Adwaita|Libadwaita|AT-SPI|accessibility).*(warning|critical|error)|GLib-GObject-CRITICAL|gtk_[a-z0-9_]+.*assertion|gdk_[a-z0-9_]+.*assertion' \
-            "$log_path" \
-            | /usr/bin/python3 "$REPO_ROOT/scripts/smoke_warning_classifiers.py" --drop-benign \
-            >>"$matches" || true
+        local filtered
+        filtered="$(
+            grep -E -i \
+                '(Gtk|Gdk|GSK|Adwaita|Libadwaita|AT-SPI|accessibility).*(warning|critical|error)|GLib-GObject-CRITICAL|gtk_[a-z0-9_]+.*assertion|gdk_[a-z0-9_]+.*assertion' \
+                "$log_path" \
+                | /usr/bin/python3 "$REPO_ROOT/scripts/smoke_warning_classifiers.py" --drop-benign \
+                || true
+        )"
+        if [[ -n "$filtered" && "$name" == preview-mode-document-alert* ]]; then
+            # The preview alert smoke intentionally denies read permission on
+            # unreadable-preview-alert.md; drop only that tracing line so worktree
+            # names containing "gtk" cannot false-trigger the Gtk.*error regex.
+            filtered="$(
+                printf '%s\n' "$filtered" | /usr/bin/python3 -c '
+import re, sys
+ansi = re.compile(r"\x1b\[[0-9;]*m")
+for raw in sys.stdin:
+    plain = ansi.sub("", raw)
+    if (
+        "ERROR lushtext_ui::ui::editor_page::load::execution: Failed to read " in plain
+        and "unreadable-preview-alert.md: Permission denied" in plain
+    ):
+        continue
+    sys.stdout.write(raw)
+'
+            )"
+        fi
+        if [[ -n "$filtered" ]]; then
+            printf '%s\n' "$filtered" >>"$matches"
+        fi
     done
 
     if [[ -s "$matches" ]]; then
