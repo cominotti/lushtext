@@ -5,8 +5,8 @@
 //! the arena, kept as the reference's row type and as fixture input.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::palette::PaletteFileIdentity;
 
 use super::{FileIndex, FileIndexMutationLedger, MAX_INDEXED_FILES};
@@ -22,17 +22,13 @@ pub struct OwnedIndexedFile {
     /// File name component, lossy UTF-8.
     pub name: String,
     /// The workspace folder that contains this file.
-    pub workspace_folder: Arc<PathBuf>,
+    pub workspace_folder: SharedPath,
 }
 
 impl OwnedIndexedFile {
     /// Create an indexed file, deriving the name from the path's last component.
     #[must_use]
-    pub fn new(
-        path: PathBuf,
-        identity: PaletteFileIdentity,
-        workspace_folder: Arc<PathBuf>,
-    ) -> Self {
+    pub fn new(path: PathBuf, identity: PaletteFileIdentity, workspace_folder: SharedPath) -> Self {
         let name = path
             .file_name()
             .map_or_default(|name| name.to_string_lossy().into_owned());
@@ -74,7 +70,7 @@ impl FileIndex {
     #[must_use]
     pub fn from_paths<I>(files: I) -> Self
     where
-        I: IntoIterator<Item = (PathBuf, PaletteFileIdentity, Arc<PathBuf>)>,
+        I: IntoIterator<Item = (PathBuf, PaletteFileIdentity, SharedPath)>,
     {
         let mut index = Self::default();
         let mut ledger = index.incremental_mutation_ledger();

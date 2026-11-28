@@ -31,6 +31,7 @@ use lushtext_model::persistence::session::{SessionData, SessionTab};
 use lushtext_model::persistence::sidecar_identity::{
     next_record_id, now_epoch_millis, stable_bytes_hash,
 };
+use lushtext_model::values::{SharedPath, SharedPaths, SharedStr};
 use lushtext_model::workspace::content_search::{
     ContentSearchOptions, MAX_REPLACE_PREVIEW_ROWS, Replacement, SearchEvent, SearchMatch,
     SearchMatchId,
@@ -187,7 +188,7 @@ fn workspace_search_plan_retained_bytes(plan: &WorkspaceSearchTraversalPlan) -> 
 
 /// Build a synthetic in-memory file index with realistic file names.
 fn make_synthetic_index(n: usize) -> FileIndex {
-    let root = Arc::new(PathBuf::from("/synthetic/project"));
+    let root = SharedPath::from("/synthetic/project");
     let dirs = [
         "src",
         "src/model",
@@ -215,7 +216,7 @@ fn make_synthetic_index(n: usize) -> FileIndex {
         (
             path.clone(),
             PaletteFileIdentity::canonical(path),
-            Arc::clone(&root),
+            root.clone(),
         )
     }))
 }
@@ -492,8 +493,8 @@ fn make_replace_all_dense_10mb_fixture() -> (TempDir, Vec<Replacement>, usize) {
         .expect("Replace All file-byte limit should fit usize");
     let source_lines = byte_limit / 2;
     fixture::write_text(&path, &"x\n".repeat(source_lines));
-    let original_line: Arc<str> = Arc::from("x");
-    let replacement_text: Arc<str> = Arc::from("y");
+    let original_line = SharedStr::from("x");
+    let replacement_text = SharedStr::from("y");
     let replacements = (0..MAX_REPLACE_PREVIEW_ROWS)
         .map(|index| {
             let line_index = index.saturating_mul(source_lines.saturating_sub(1))
@@ -1363,7 +1364,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
 
     let request = palette::FileIndexBuildRequest {
         visibility: WorkspaceEntryVisibility::default(),
-        workspace_folders: Arc::from([flat.path().to_path_buf()]),
+        workspace_folders: SharedPaths::from([flat.path().to_path_buf()]),
         capacity_hint: 10_000,
     };
     let mut file_coordinator = palette::FileIndexBuildCoordinator::default();
@@ -2227,7 +2228,7 @@ fn bench_file_index_incremental(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let index = make_synthetic_index(size);
-                    let root = Arc::new(PathBuf::from("/synthetic/project"));
+                    let root = SharedPath::from("/synthetic/project");
                     let new_file = OwnedIndexedFile::new(
                         PathBuf::from("/synthetic/project/src/new_file.rs"),
                         PaletteFileIdentity::canonical(PathBuf::from(

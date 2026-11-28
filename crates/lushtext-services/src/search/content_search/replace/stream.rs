@@ -831,12 +831,12 @@ pub fn apply_replacements_to_text_reference_for_property_test(
 #[cfg(all(test, feature = "property-tests"))]
 mod property_error_tests {
     use std::path::PathBuf;
-    use std::sync::Arc;
 
     use super::{
         ReplaceStreamPropertyError, apply_replacements_to_text_in_chunks_for_property_test,
         apply_replacements_to_text_reference_outcome_for_property_test,
     };
+    use lushtext_model::values::SharedStr;
     use lushtext_model::workspace::content_search::{Replacement, SearchMatchId};
 
     fn replacement(line_number: u64, original_line: &str) -> Replacement {
@@ -844,9 +844,9 @@ mod property_error_tests {
             match_id: SearchMatchId::from_index(0),
             path: PathBuf::from("/tmp/sample.txt"),
             line_number,
-            original_line: Arc::from(original_line),
+            original_line: SharedStr::from(original_line),
             replaced_line: "done".to_string(),
-            replacement: Arc::from("done"),
+            replacement: SharedStr::from("done"),
             match_range: 0..original_line.len(),
         }
     }

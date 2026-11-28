@@ -62,7 +62,7 @@ use super::{GuardedReplacements, LushtextSearchPanel};
 pub(super) enum ReplaceAdmissionPhase {
     #[default]
     Idle,
-    Parked(ParkedReplaceRun),
+    Parked(Box<ParkedReplaceRun>),
 }
 
 /// Owned Replace stage-4 admission state.
@@ -161,7 +161,7 @@ impl LushtextSearchPanel {
         let previous = imp
             .replace_admission
             .phase
-            .replace(ReplaceAdmissionPhase::Parked(parked));
+            .replace(ReplaceAdmissionPhase::Parked(Box::new(parked)));
         debug_assert!(
             matches!(previous, ReplaceAdmissionPhase::Idle),
             "one parked run per panel"
@@ -192,7 +192,7 @@ impl LushtextSearchPanel {
             run_control_present: self.replace_run_in_flight(),
         };
         let resumption = match policy::replace_admission_resume(facts) {
-            ReplaceAdmissionDecision::Resume => ReplaceAdmissionResumption::Resume(parked),
+            ReplaceAdmissionDecision::Resume => ReplaceAdmissionResumption::Resume(*parked),
             ReplaceAdmissionDecision::Abandon(reason) => {
                 // Counts only: a skip or wait diagnostic never carries content.
                 tracing::info!(
@@ -200,7 +200,7 @@ impl LushtextSearchPanel {
                     files = parked.replacements.len(),
                     "Replace All wait for disposal capacity ended before the run started"
                 );
-                self.retire_parked_selection(parked);
+                self.retire_parked_selection(*parked);
                 ReplaceAdmissionResumption::Ended(reason)
             }
         };
@@ -216,7 +216,7 @@ impl LushtextSearchPanel {
         let ReplaceAdmissionPhase::Parked(parked) = imp.replace_admission.phase.take() else {
             return false;
         };
-        self.retire_parked_selection(parked);
+        self.retire_parked_selection(*parked);
         self.hand_resumption_to_window(ReplaceAdmissionResumption::Ended(
             ReplaceWaitEnd::Cancelled,
         ));

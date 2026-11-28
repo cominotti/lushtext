@@ -7,9 +7,9 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use lushtext_model::values::SharedStr;
 use lushtext_model::workspace::content_search::{
     ContentSearchOptions, ReplacePreviewSkipReason, ReplaceSkipReason, Replacement, SearchMatch,
     SearchMatchId,
@@ -108,7 +108,7 @@ fn replacement_output_accepts_exact_file_limit_and_rejects_one_byte_over() {
         let replacement = expanding_replacement(
             &path,
             SearchMatchId::from_index(0),
-            Arc::from("a".repeat(FILE_LIMIT)),
+            SharedStr::from("a".repeat(FILE_LIMIT)),
         );
 
         let outcome = content_search::apply_replacements(
@@ -130,7 +130,7 @@ fn replacement_output_accepts_exact_file_limit_and_rejects_one_byte_over() {
     let replacement = expanding_replacement(
         &path,
         SearchMatchId::from_index(1),
-        Arc::from("b".repeat(FILE_LIMIT.saturating_add(1))),
+        SharedStr::from("b".repeat(FILE_LIMIT.saturating_add(1))),
     );
 
     let outcome = content_search::apply_replacements(
@@ -160,8 +160,8 @@ fn dense_short_line_replace_all_reports_replacement_bounded_construction() {
 
     let ctx = TestContext::new();
     let path = ctx.write_file("workspace/dense.txt", &"x\n".repeat(SOURCE_LINES));
-    let original_line: Arc<str> = Arc::from("x");
-    let replacement_text: Arc<str> = Arc::from("y");
+    let original_line = SharedStr::from("x");
+    let replacement_text = SharedStr::from("y");
     let replacements: Vec<_> = (0..REPLACEMENTS)
         .map(|index| {
             let line_index = index.saturating_mul(SOURCE_LINES.saturating_sub(1))
@@ -320,9 +320,9 @@ fn replacement_for(path: &std::path::Path, match_id: SearchMatchId) -> Replaceme
         match_id,
         path: path.to_path_buf(),
         line_number: 1,
-        original_line: Arc::from("needle"),
+        original_line: SharedStr::from("needle"),
         replaced_line: "done".to_string(),
-        replacement: Arc::from("done"),
+        replacement: SharedStr::from("done"),
         match_range: 0..6,
     }
 }
@@ -330,13 +330,13 @@ fn replacement_for(path: &std::path::Path, match_id: SearchMatchId) -> Replaceme
 fn expanding_replacement(
     path: &std::path::Path,
     match_id: SearchMatchId,
-    replacement: Arc<str>,
+    replacement: SharedStr,
 ) -> Replacement {
     Replacement {
         match_id,
         path: path.to_path_buf(),
         line_number: 1,
-        original_line: Arc::from("x"),
+        original_line: SharedStr::from("x"),
         replaced_line: String::new(),
         replacement,
         match_range: 0..1,

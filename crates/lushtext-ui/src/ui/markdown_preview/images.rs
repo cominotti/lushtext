@@ -488,7 +488,7 @@ fn first_loadable_ordered_image_with_metrics_cancellable(
             {
                 return (result, metrics);
             }
-            for folder in context.workspace_folders.iter() {
+            for folder in &context.workspace_folders {
                 if let Some(result) = inspect(folder.join(&path)) {
                     return (result, metrics);
                 }

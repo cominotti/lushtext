@@ -31,11 +31,11 @@ mod traversal;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use crate::coordination::single_flight::{
     SingleFlightCoordinator, SingleFlightSnapshot, SingleFlightStart,
 };
+use lushtext_model::values::{SharedPath, SharedPaths};
 use lushtext_model::workspace::palette::{
     FileOrdinal, PaletteFileIdentity, ScoredResult, SearchResultItem,
 };
@@ -142,7 +142,7 @@ pub enum FileIndexBuildOutcome {
 /// Compact request retained by the file-index rebuild coordinator.
 #[derive(Clone, Debug)]
 pub struct FileIndexBuildRequest {
-    pub workspace_folders: Arc<[PathBuf]>,
+    pub workspace_folders: SharedPaths,
     pub capacity_hint: usize,
     /// Visibility rule captured when the request was built.
     pub visibility: WorkspaceEntryVisibility,
@@ -245,7 +245,7 @@ impl<'a> IndexedFile<'a> {
 
     /// The workspace folder whose traversal or add reached this file.
     #[must_use]
-    pub fn workspace_folder(&self) -> &'a Arc<PathBuf> {
+    pub fn workspace_folder(&self) -> &'a SharedPath {
         self.index.file_folder(self.ordinal)
     }
 
@@ -257,7 +257,7 @@ impl<'a> IndexedFile<'a> {
             path: self.path(),
             identity: self.identity(),
             name: self.name().to_string(),
-            workspace_folder: Arc::clone(self.workspace_folder()),
+            workspace_folder: self.workspace_folder().clone(),
         }
     }
 }
@@ -296,7 +296,7 @@ impl FileIndex {
         let folders = self
             .folders
             .iter()
-            .map(|folder| folder.display.as_ref().clone())
+            .map(|folder| folder.display.to_path_buf())
             .collect::<Vec<_>>();
         Self::rebuild_with_visibility(&folders, &self.visibility)
     }
@@ -502,11 +502,11 @@ impl FileIndex {
     /// directory the index still holds (a folder removed or renamed away is
     /// not addressable).
     #[must_use]
-    pub fn workspace_folder_for(&self, path: &Path) -> Option<Arc<PathBuf>> {
+    pub fn workspace_folder_for(&self, path: &Path) -> Option<SharedPath> {
         self.folders
             .iter()
             .find(|folder| folder.root != NO_DIR && path.starts_with(folder.display.as_path()))
-            .map(|folder| Arc::clone(&folder.display))
+            .map(|folder| folder.display.clone())
     }
 
     fn scored_files(&self) -> impl ExactSizeIterator<Item = u32> + '_ {

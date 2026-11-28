@@ -43,10 +43,10 @@ use lushtext_model::document::file_load::{
     ExternalLoadPressure, FileLoadAdmissionPolicy, FileLoadAdmissionRequest,
     FileLoadAdmissionSnapshot, FileLoadPriority, decoded_body_reservation_weight,
 };
-use lushtext_model::values::EditorId;
+use lushtext_model::values::{EditorId, LoadGeneration};
 use lushtext_services::editor_io::{self, EditorLoadError, FileLoadPlan, LoadMetadata};
 
-use super::policy::{self, AbortDisposition, LoadOutcome, LoadRequestTicket};
+use super::policy::{self, AbortDisposition, LoadOutcome};
 use super::{evidence, execution, retirement, save};
 
 thread_local! {
@@ -186,17 +186,48 @@ struct AdmittedLoadOutcome {
     result: Result<GuardedLoadResult, EditorLoadError>,
 }
 
+/// The load identity and cancellation token captured together when a load starts.
+#[derive(Clone, Debug)]
+pub(crate) struct LoadRequestTicket {
+    /// The load generation this request was dispatched under.
+    pub(crate) load_generation: LoadGeneration,
+    /// The cancellation token this request was dispatched with.
+    pub(crate) cancel_token: Arc<AtomicBool>,
+}
+
 impl LoadRequestTicket {
+    /// Build the ticket one load request is dispatched and validated under.
+    pub(crate) fn new(load_generation: LoadGeneration, cancel_token: Arc<AtomicBool>) -> Self {
+        Self {
+            load_generation,
+            cancel_token,
+        }
+    }
+
+    /// Whether the user or a newer request has asked this load to stop.
+    pub(crate) fn cancel_requested(&self) -> bool {
+        self.cancel_token.load(Ordering::Acquire)
+    }
+
     /// Whether this dispatched request still describes its editor's live state.
     ///
     /// The ticket carries dispatch-time expectation; the editor supplies the
     /// live generation and token. No `*Facts` companion is needed because every
     /// clause the completion compares is live editor state.
     pub(super) fn is_current(&self, editor: &LushtextEditorPage) -> bool {
-        policy::load_request_is_current(
-            self,
-            editor.imp().load_tracking.generation.get(),
+        let token_state = if Arc::ptr_eq(
+            &self.cancel_token,
             &editor.imp().load_tracking.cancel_token.borrow(),
+        ) && !self.cancel_requested()
+        {
+            policy::LoadCancelTokenState::ActiveUnexpired
+        } else {
+            policy::LoadCancelTokenState::SupersededOrCancelled
+        };
+        policy::load_request_is_current(
+            self.load_generation,
+            editor.imp().load_tracking.generation.get(),
+            token_state,
         )
     }
 }

@@ -569,11 +569,11 @@ fn bookmark_gutter_tooltip(bookmark: &BookmarkRecord) -> String {
 }
 
 /// Register a callback for bookmark gutter activation.
-pub(super) fn connect_bookmark_activated<F: Fn(BookmarkRecord) + 'static>(
+pub(super) fn connect_bookmark_activated(
     editor: &LushtextEditorPage,
-    f: F,
+    f: Box<dyn Fn(BookmarkRecord) + 'static>,
 ) {
-    *editor.imp().bookmarks.activated_callback.borrow_mut() = Some(Box::new(f));
+    *editor.imp().bookmarks.activated_callback.borrow_mut() = Some(f);
 }
 
 /// Reconcile persisted bookmark lines after the user edits the buffer.

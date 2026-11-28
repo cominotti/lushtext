@@ -400,12 +400,12 @@ impl LushtextWindow {
     }
 
     /// Snapshot and write one close candidate before admitting the next body.
-    fn drive_close_draft_pipeline<F: FnOnce(Result<(), DraftFlushError>) + 'static>(
+    fn drive_close_draft_pipeline(
         &self,
         mut candidates: Vec<WritableDraftCandidate>,
         accepted: Vec<AcceptedDraft>,
         failures: DraftPipelineFailures,
-        on_done: F,
+        on_done: Box<dyn FnOnce(Result<(), DraftFlushError>) + 'static>,
     ) {
         let Some(candidate) = candidates.pop() else {
             self.commit_close_draft_pipeline(accepted, failures, on_done);
@@ -528,11 +528,11 @@ impl LushtextWindow {
     }
 
     /// Commit successful close bodies once and report every unconfirmed draft.
-    fn commit_close_draft_pipeline<F: FnOnce(Result<(), DraftFlushError>) + 'static>(
+    fn commit_close_draft_pipeline(
         &self,
         accepted: Vec<AcceptedDraft>,
         mut failures: DraftPipelineFailures,
-        on_done: F,
+        on_done: Box<dyn FnOnce(Result<(), DraftFlushError>) + 'static>,
     ) {
         let mut accepted_entries = Vec::new();
         for accepted in accepted {
@@ -629,16 +629,16 @@ impl LushtextWindow {
                     window.imp().drafts.finish_close_flush_run();
                     window.release_journal_lane();
                     window.drive_pending_draft_mutations();
-                    window.wait_for_draft_mutations_then(move || {
+                    window.wait_for_draft_mutations_then(Box::new(move || {
                         on_done(result);
-                    });
+                    }));
                 }
             },
         );
     }
 
     /// Run a close continuation only after queued draft mutations have drained.
-    fn wait_for_draft_mutations_then<F: FnOnce() + 'static>(&self, on_done: F) {
+    fn wait_for_draft_mutations_then(&self, on_done: Box<dyn FnOnce() + 'static>) {
         if close_flush_must_wait(CloseFlushWaitFacts {
             mutation_inflight: self.imp().drafts.is_mutation_inflight(),
             cleanup_inflight: false,
@@ -953,7 +953,7 @@ impl LushtextWindow {
                         .collect(),
                     ..DraftPipelineFailures::default()
                 },
-                on_done,
+                Box::new(on_done),
             );
         });
     }

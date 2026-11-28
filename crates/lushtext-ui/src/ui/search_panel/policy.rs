@@ -33,7 +33,6 @@
 //!   [`search_limit_clause`]).
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::ui::search_bar::policy::EditorReplacePrefill;
 use lushtext_model::budgets::list_budget::grouped_thousands;
@@ -251,22 +250,22 @@ pub const fn replace_admission_resume(facts: ReplaceAdmissionFacts) -> ReplaceAd
 
 /// Compact latest query retained while one active search disconnects.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkspaceSearchRequest {
+pub struct WorkspaceSearchRequest<F = Vec<PathBuf>> {
     pub spec: SearchQuerySpec,
-    pub folders: Arc<[PathBuf]>,
+    pub folders: F,
 }
 
 /// One request admitted to become the only active controller/walker group.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkspaceSearchStart {
+pub struct WorkspaceSearchStart<F = Vec<PathBuf>> {
     pub generation: FlightGeneration,
-    pub request: WorkspaceSearchRequest,
+    pub request: WorkspaceSearchRequest<F>,
 }
 
 /// Result of submitting one latest query to the single-flight policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WorkspaceSearchSubmission {
-    Start(WorkspaceSearchStart),
+pub enum WorkspaceSearchSubmission<F = Vec<PathBuf>> {
+    Start(WorkspaceSearchStart<F>),
     Supersede { active_generation: FlightGeneration },
 }
 
@@ -285,12 +284,20 @@ pub struct WorkspaceSearchFlightSnapshot {
 /// search does not use the coordinator's cancellation token (the content-search
 /// walker owns cancellation), and `submit` reports the superseded generation
 /// rather than dropping it.
-#[derive(Debug, Default)]
-pub struct WorkspaceSearchFlight {
-    coordinator: SingleFlightCoordinator<WorkspaceSearchRequest>,
+#[derive(Debug)]
+pub struct WorkspaceSearchFlight<F = Vec<PathBuf>> {
+    coordinator: SingleFlightCoordinator<WorkspaceSearchRequest<F>>,
 }
 
-impl WorkspaceSearchFlight {
+impl<F> Default for WorkspaceSearchFlight<F> {
+    fn default() -> Self {
+        Self {
+            coordinator: SingleFlightCoordinator::default(),
+        }
+    }
+}
+
+impl<F> WorkspaceSearchFlight<F> {
     /// Start immediately when idle, otherwise replace the compact pending query.
     ///
     /// # Panics
@@ -298,7 +305,7 @@ impl WorkspaceSearchFlight {
     /// Panics only if the shared coordinator rejects a submission while
     /// reporting no active generation, which its one-active/one-latest contract
     /// makes impossible.
-    pub fn submit(&mut self, request: WorkspaceSearchRequest) -> WorkspaceSearchSubmission {
+    pub fn submit(&mut self, request: WorkspaceSearchRequest<F>) -> WorkspaceSearchSubmission<F> {
         let active_generation = self.coordinator.active_generation();
         match self.coordinator.submit(request) {
             Some(start) => WorkspaceSearchSubmission::Start(WorkspaceSearchStart {
@@ -313,7 +320,7 @@ impl WorkspaceSearchFlight {
     }
 
     /// Finish only the current generation and admit the retained latest query.
-    pub fn finish(&mut self, generation: FlightGeneration) -> Option<WorkspaceSearchStart> {
+    pub fn finish(&mut self, generation: FlightGeneration) -> Option<WorkspaceSearchStart<F>> {
         self.coordinator
             .finish(generation)
             .map(|start| WorkspaceSearchStart {
@@ -453,7 +460,7 @@ impl ReplacePreviewTicket {
 }
 
 /// Bytes charged per retained match beyond its line text: the plain match
-/// (`SearchMatch`, its `Arc<str>` header), its list item and the item's display
+/// (`SearchMatch`, its `SharedStr` header), its list item and the item's display
 /// copy of the line (at most 500 bytes plus an ellipsis), its tree row and its
 /// two navigation entries.
 ///
@@ -918,7 +925,7 @@ mod flight_tests {
                 query: query.to_string(),
                 options: ContentSearchOptions::default(),
             },
-            folders: Arc::from([PathBuf::from("/workspace")]),
+            folders: vec![PathBuf::from("/workspace")],
         }
     }
 
@@ -978,31 +985,6 @@ mod flight_tests {
         flight.clear_pending();
         assert_eq!(flight.snapshot().active, 1);
         assert_eq!(flight.snapshot().pending, 0);
-    }
-
-    #[test]
-    fn active_and_pending_requests_share_immutable_scope_snapshots() {
-        let shared =
-            Arc::<[PathBuf]>::from([PathBuf::from("/workspace/a"), PathBuf::from("/workspace/b")]);
-        let mut first = request("first");
-        first.folders = Arc::clone(&shared);
-        let mut latest = request("latest");
-        latest.folders = Arc::clone(&shared);
-        let changed = Arc::<[PathBuf]>::from([PathBuf::from("/workspace/changed")]);
-
-        let mut flight = WorkspaceSearchFlight::default();
-        let WorkspaceSearchSubmission::Start(active) = flight.submit(first) else {
-            panic!("first request should start");
-        };
-        flight.submit(latest);
-        let pending = flight
-            .finish(active.generation)
-            .expect("latest request should start");
-
-        assert!(Arc::ptr_eq(&active.request.folders, &shared));
-        assert!(Arc::ptr_eq(&pending.request.folders, &shared));
-        assert!(!Arc::ptr_eq(&pending.request.folders, &changed));
-        assert_eq!(pending.request.folders.as_ref(), shared.as_ref());
     }
 }
 

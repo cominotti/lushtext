@@ -940,15 +940,15 @@ fn build_notes_preview_page(
 
 pub(super) trait NotesBrowserEntryExt {
     /// User-facing row title used in the browser list.
-    fn row_title(&self) -> String;
+    fn row_title(&self) -> &str;
     /// Secondary row text used for scope and location metadata.
-    fn row_subtitle(&self) -> String;
+    fn row_subtitle(&self) -> &str;
     /// Optional row detail showing the first meaningful line of note text.
-    fn row_detail(&self) -> Option<String>;
+    fn row_detail(&self) -> Option<&str>;
     /// Title shown in the preview header for the selected note.
-    fn preview_title(&self) -> String;
+    fn preview_title(&self) -> &str;
     /// Secondary preview metadata shown under the selected note title.
-    fn preview_meta(&self) -> String;
+    fn preview_meta(&self) -> &str;
     /// Render context used by the shared markdown preview widget.
     fn render_context(&self) -> MarkdownPreviewRenderContext;
     /// Symbolic icon used by the browser row.
@@ -956,23 +956,23 @@ pub(super) trait NotesBrowserEntryExt {
 }
 
 impl NotesBrowserEntryExt for NotesBrowserEntry {
-    fn row_title(&self) -> String {
-        self.title.clone()
+    fn row_title(&self) -> &str {
+        &self.title
     }
 
-    fn row_subtitle(&self) -> String {
-        self.subtitle.clone()
+    fn row_subtitle(&self) -> &str {
+        &self.subtitle
     }
 
-    fn row_detail(&self) -> Option<String> {
-        self.detail.clone()
+    fn row_detail(&self) -> Option<&str> {
+        self.detail.as_deref()
     }
 
-    fn preview_title(&self) -> String {
+    fn preview_title(&self) -> &str {
         self.row_title()
     }
 
-    fn preview_meta(&self) -> String {
+    fn preview_meta(&self) -> &str {
         self.row_subtitle()
     }
 
@@ -1097,8 +1097,8 @@ impl NotesBrowserState {
             return;
         };
 
-        state.preview_title.set_label(&entry.preview_title());
-        state.preview_meta.set_label(&entry.preview_meta());
+        state.preview_title.set_label(entry.preview_title());
+        state.preview_meta.set_label(entry.preview_meta());
         if matches!(&entry.target, PaletteNoteTarget::Bookmark { .. }) {
             Self::refresh_bookmark_preview(state, entry);
         } else if entry.note_text().trim().is_empty() {
@@ -1115,7 +1115,7 @@ impl NotesBrowserState {
             &state.open_button,
             &format!("Open {}", entry.preview_title()),
         );
-        accessibility::set_value_text(&state.preview_stack, &entry.preview_title());
+        accessibility::set_value_text(&state.preview_stack, entry.preview_title());
 
         if user_selected {
             // `show-content` is only visible while collapsed, but setting it
@@ -1421,16 +1421,16 @@ fn bind_notes_row(
             .unwrap_or(&entry.title)
     });
     let title = if state.mode.get() == palette_service::NotesBrowserMode::Bookmarks {
-        bookmark_label.map_or_else(|| entry.row_title(), str::to_owned)
+        bookmark_label.unwrap_or_else(|| entry.row_title())
     } else {
         entry.row_title()
     };
     let subtitle = entry.row_detail().map_or_else(
-        || entry.row_subtitle(),
-        |detail| format!("{} · {detail}", entry.row_subtitle()),
+        || std::borrow::Cow::Borrowed(entry.row_subtitle()),
+        |detail| std::borrow::Cow::Owned(format!("{} · {detail}", entry.row_subtitle())),
     );
     widgets.icon.set_icon_name(Some(entry.sidebar_icon_name()));
-    widgets.title.set_text(&title);
+    widgets.title.set_text(title);
     widgets.subtitle.set_text(&subtitle);
     widgets.subtitle.set_visible(!subtitle.is_empty());
     if let Some(child) = list_item.child() {
@@ -1442,7 +1442,7 @@ fn bind_notes_row(
     let description = format!("{section} · {subtitle}");
     accessibility::apply_list_item_row_accessibility(
         list_item,
-        accessibility::RowAccessibility::new(&title).description(&description),
+        accessibility::RowAccessibility::new(title).description(&description),
     );
     if let Some(bookmark_label) = bookmark_label {
         let action_label = format!("Open bookmark {bookmark_label}");

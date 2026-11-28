@@ -13,6 +13,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_model::budgets::responsiveness_budget::B_SETTLE_US;
 use lushtext_model::persistence::bookmark::BookmarkRecord;
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::palette::{
     FileOrdinal, PaletteCategory, PaletteFileEntry, PaletteFileIdentity, PaletteNoteCategory,
     PaletteNoteEntry, PaletteNoteTarget, SearchMode,
@@ -26,7 +27,6 @@ use lushtext_ui::ui::window::LushtextWindow;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Duration;
 
 /// GTK's realized-row cap for one list view (ledger A1: about 205).
@@ -43,14 +43,14 @@ impl Drop for PolicyReset {
 }
 
 fn synthetic_index(count: usize) -> FileIndex {
-    let root = Arc::new(PathBuf::from("/synthetic/category"));
+    let root = SharedPath::from("/synthetic/category");
     // Streamed: a 2^20-file fixture never holds its files as owned rows.
     FileIndex::from_paths((0..count).map(|index| {
         let path = root.join(format!("d{}/f-{index:06}.rs", index % 13));
         (
             path.clone(),
             PaletteFileIdentity::canonical(path),
-            Arc::clone(&root),
+            root.clone(),
         )
     }))
 }

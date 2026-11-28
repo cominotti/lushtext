@@ -31,13 +31,10 @@
 //!   announcement.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use lushtext_model::budgets::list_budget::{grouped_thousands, rows_within};
 use lushtext_model::workspace::palette::PaletteCategory;
-use lushtext_services::palette::{
-    FileIndex, FileIndexMutationLedger, MAX_INDEXED_FILES, PALETTE_CATEGORY_CANDIDATE_BYTES,
-};
+use lushtext_services::palette::{MAX_INDEXED_FILES, PALETTE_CATEGORY_CANDIDATE_BYTES};
 
 /// Debounce interval for handing incremental index updates to the worker.
 ///
@@ -395,7 +392,7 @@ pub enum FileIndexUpdate {
         /// Absolute path of the created file.
         path: PathBuf,
         /// Workspace folder the created file is indexed under.
-        workspace_folder: Arc<PathBuf>,
+        workspace_folder: PathBuf,
     },
     /// A deleted file, or a directory prefix whose files are all gone.
     Delete(PathBuf),
@@ -409,22 +406,6 @@ pub enum FileIndexUpdate {
 }
 
 impl FileIndexUpdate {
-    /// Apply this mutation to a worker-owned index clone under its ledger.
-    pub(crate) fn apply(&self, index: &mut FileIndex, ledger: &mut FileIndexMutationLedger) {
-        match self {
-            Self::Create {
-                path,
-                workspace_folder,
-            } => {
-                index.add_path_for_bounded_batch(path, workspace_folder, ledger);
-            }
-            Self::Delete(path) => index.remove_path_for_bounded_batch(path, ledger),
-            Self::Rename { old_path, new_path } => {
-                index.rename_path_for_bounded_batch(old_path, new_path, ledger);
-            }
-        }
-    }
-
     /// Exact conservative bytes this queued mutation retains.
     #[must_use]
     pub fn retained_byte_weight(&self) -> u64 {
@@ -432,7 +413,11 @@ impl FileIndexUpdate {
         u64::try_from(std::mem::size_of::<Self>())
             .unwrap_or(u64::MAX)
             .saturating_add(match self {
-                Self::Create { path, .. } | Self::Delete(path) => path_bytes(path),
+                Self::Create {
+                    path,
+                    workspace_folder,
+                } => path_bytes(path).saturating_add(path_bytes(workspace_folder)),
+                Self::Delete(path) => path_bytes(path),
                 Self::Rename { old_path, new_path } => {
                     path_bytes(old_path).saturating_add(path_bytes(new_path))
                 }
@@ -761,14 +746,15 @@ mod tests {
     /// matching files and the palette caps each category at
     /// [`MAX_RESULTS_PER_SOURCE`].
     fn file_rows_shown(count: usize) -> usize {
+        use lushtext_model::values::SharedPath;
         use lushtext_model::workspace::palette::{
             PaletteFileIdentity, PaletteSearchRow, SearchMode,
         };
         use lushtext_services::palette::{
-            GroupedSearchInput, OwnedIndexedFile, PaletteSearchCancellation, PaletteSearchOutcome,
-            grouped_search,
+            FileIndex, GroupedSearchInput, OwnedIndexedFile, PaletteSearchCancellation,
+            PaletteSearchOutcome, grouped_search,
         };
-        let folder = Arc::new(PathBuf::from("/workspace"));
+        let folder = SharedPath::from("/workspace");
         let index = FileIndex::from(
             (0..count)
                 .map(|n| {
@@ -776,7 +762,7 @@ mod tests {
                     OwnedIndexedFile::new(
                         path.clone(),
                         PaletteFileIdentity::canonical(path),
-                        Arc::clone(&folder),
+                        folder.clone(),
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -821,7 +807,7 @@ mod tests {
     fn create_update() -> FileIndexUpdate {
         FileIndexUpdate::Create {
             path: PathBuf::from("/workspace/notes/todo.md"),
-            workspace_folder: Arc::new(PathBuf::from("/workspace")),
+            workspace_folder: PathBuf::from("/workspace"),
         }
     }
 
@@ -835,61 +821,6 @@ mod tests {
         assert_eq!(INDEX_UPDATE_DEBOUNCE_MS, 75);
         assert_eq!(SEARCH_DEBOUNCE_MS, 150);
         assert_eq!(MAX_RESULTS_PER_SOURCE, 64);
-    }
-
-    #[test]
-    fn each_update_kind_actually_mutates_the_index() {
-        use lushtext_model::workspace::palette::PaletteFileIdentity;
-        use lushtext_services::palette::OwnedIndexedFile;
-
-        let folder = Arc::new(PathBuf::from("/workspace"));
-        let indexed = |name: &str| {
-            let path = folder.join(name);
-            OwnedIndexedFile::new(
-                path.clone(),
-                PaletteFileIdentity::canonical(path),
-                Arc::clone(&folder),
-            )
-        };
-        let base = FileIndex::from(vec![indexed("one.rs"), indexed("two.rs")]);
-
-        let mut created = base.clone();
-        let mut ledger = created.incremental_mutation_ledger();
-        FileIndexUpdate::Create {
-            path: folder.join("three.rs"),
-            workspace_folder: Arc::clone(&folder),
-        }
-        .apply(&mut created, &mut ledger);
-        created.finish_mutation_batch(&mut ledger);
-        assert_eq!(created.len(), 3, "Create must add a file");
-
-        let mut deleted = base.clone();
-        let mut ledger = deleted.incremental_mutation_ledger();
-        FileIndexUpdate::Delete(folder.join("one.rs")).apply(&mut deleted, &mut ledger);
-        deleted.finish_mutation_batch(&mut ledger);
-        assert_eq!(deleted.len(), 1, "Delete must remove a file");
-
-        let mut renamed = base;
-        let mut ledger = renamed.incremental_mutation_ledger();
-        FileIndexUpdate::Rename {
-            old_path: folder.join("one.rs"),
-            new_path: folder.join("renamed.rs"),
-        }
-        .apply(&mut renamed, &mut ledger);
-        renamed.finish_mutation_batch(&mut ledger);
-        assert_eq!(renamed.len(), 2, "Rename keeps the count");
-        assert!(
-            renamed
-                .files()
-                .any(|file| file.path() == folder.join("renamed.rs")),
-            "Rename must move the path"
-        );
-        assert!(
-            !renamed
-                .files()
-                .any(|file| file.path() == folder.join("one.rs")),
-            "Rename must retire the old path"
-        );
     }
 
     #[test]

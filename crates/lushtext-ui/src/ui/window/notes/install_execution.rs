@@ -163,6 +163,13 @@ impl NoteBody {
         &self,
         callback: F,
     ) -> Option<buffer_snapshot::BufferSnapshotHandle> {
+        self.snapshot_text_inner(Box::new(callback))
+    }
+
+    fn snapshot_text_inner(
+        &self,
+        callback: Box<dyn FnOnce(buffer_snapshot::BufferSnapshotOutcome) + 'static>,
+    ) -> Option<buffer_snapshot::BufferSnapshotHandle> {
         if let Some(text) = self.folded.borrow().clone() {
             gtk_lush_tasks::spawn_blocking_then(
                 self.view.clone(),

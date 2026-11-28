@@ -54,7 +54,7 @@ use std::time::{Duration, Instant};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
-use lushtext_model::values::RevealGeneration;
+use lushtext_model::values::{RevealGeneration, SharedPath};
 
 use crate::ui::sidebar::policy::{
     self, REVEAL_SETTLE_FRAME_BUDGET, WorkspaceRevealPlan, WorkspaceRevealRefusal,
@@ -80,7 +80,7 @@ pub(crate) struct RevealState {
     superseded_count: Cell<u64>,
     active: RefCell<Option<ActiveReveal>>,
     /// The section and target of the latest `revealed` reveal, for geometry.
-    revealed: RefCell<Option<(glib::WeakRef<WorkspaceSection>, PathBuf)>>,
+    revealed: RefCell<Option<(glib::WeakRef<WorkspaceSection>, SharedPath)>>,
 }
 
 struct ActiveReveal {
@@ -495,7 +495,8 @@ impl LushtextSidebar {
         let section = active.section.upgrade();
         match (status, section) {
             (WorkspaceRevealStatus::Revealed, Some(section)) => {
-                *state.revealed.borrow_mut() = Some((section.downgrade(), active.plan.target));
+                *state.revealed.borrow_mut() =
+                    Some((section.downgrade(), SharedPath::from(active.plan.target)));
             }
             (
                 WorkspaceRevealStatus::NotFound | WorkspaceRevealStatus::BeyondEntryCap,

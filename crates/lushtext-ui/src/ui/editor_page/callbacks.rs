@@ -43,6 +43,10 @@ impl LushtextEditorPage {
     /// `memory-policy-changed` GObject signal. A new observer replaces the
     /// previous window observer.
     pub fn connect_memory_policy_changed<F: Fn() + 'static>(&self, f: F) {
+        self.connect_memory_policy_changed_boxed(Box::new(f));
+    }
+
+    fn connect_memory_policy_changed_boxed(&self, f: Box<dyn Fn() + 'static>) {
         if let Some(prev) = self.imp().callbacks.memory_changed_handler.take() {
             self.disconnect(prev);
         }
@@ -56,7 +60,14 @@ impl LushtextEditorPage {
     }
 
     pub fn connect_inline_notification<F: Fn(InlineActionNotification) + 'static>(&self, f: F) {
-        *self.imp().callbacks.notification.borrow_mut() = Some(Rc::new(f));
+        self.connect_inline_notification_boxed(Box::new(f));
+    }
+
+    fn connect_inline_notification_boxed(
+        &self,
+        f: Box<dyn Fn(InlineActionNotification) + 'static>,
+    ) {
+        *self.imp().callbacks.notification.borrow_mut() = Some(Rc::from(f));
     }
 
     /// Advance policy freshness and emit `memory-policy-changed` without copying text.
@@ -86,7 +97,14 @@ impl LushtextEditorPage {
     /// it on the notification bus if so, and returns whether an alert is still
     /// shown for this editor afterwards.
     pub fn connect_inline_notification_load_settled<F: Fn(bool) -> bool + 'static>(&self, f: F) {
-        *self.imp().callbacks.notification_load_settled.borrow_mut() = Some(Rc::new(f));
+        self.connect_inline_notification_load_settled_boxed(Box::new(f));
+    }
+
+    fn connect_inline_notification_load_settled_boxed(
+        &self,
+        f: Box<dyn Fn(bool) -> bool + 'static>,
+    ) {
+        *self.imp().callbacks.notification_load_settled.borrow_mut() = Some(Rc::from(f));
     }
 
     /// Settle the current alert for a successful load.

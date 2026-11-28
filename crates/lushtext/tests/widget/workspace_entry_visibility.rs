@@ -315,7 +315,7 @@ fn search_and_collect_files(window: &LushtextWindow, spec: &SearchQuerySpec) -> 
         .file_groups
         .borrow()
         .keys()
-        .map(|path| path.to_path_buf())
+        .map(lushtext_model::values::SharedPath::to_path_buf)
         .collect()
 }
 

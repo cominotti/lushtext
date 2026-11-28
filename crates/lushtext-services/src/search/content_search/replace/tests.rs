@@ -690,8 +690,8 @@ fn a_run_that_replaces_nothing_removes_the_superseded_journal() {
 #[test]
 fn replace_all_failure_heavy_summary_is_exact_bounded_and_content_free() {
     let dir = tempdir().expect("tempdir");
-    let private_line: std::sync::Arc<str> = std::sync::Arc::from("private-document-sentinel");
-    let replacement: std::sync::Arc<str> = std::sync::Arc::from("done");
+    let private_line = lushtext_model::values::SharedStr::from("private-document-sentinel");
+    let replacement = lushtext_model::values::SharedStr::from("done");
     let replacements = (0..MAX_REPLACE_PREVIEW_ROWS)
         .map(|index| Replacement {
             match_id: lushtext_model::workspace::content_search::SearchMatchId::from_index(index),

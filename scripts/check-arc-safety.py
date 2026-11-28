@@ -42,14 +42,8 @@ STRICT_CEILINGS: dict[str, int] = {
     "cold_generic_fn_ui": 25,
 }
 
-# Temporary baseline ceilings from `main` (5ac724f3) until Change 5 Step 3 tightens
-# every category to STRICT_CEILINGS.
-ACTIVE_CEILINGS: dict[str, int] = {
-    "naked_arc_document_payload": 6,
-    "double_indirected_arc_pathbuf": 28,
-    "arc_in_policy_or_kani": 9,
-    "cold_generic_fn_ui": 63,
-}
+# Final strict programme ceilings enforced on every tree.
+ACTIVE_CEILINGS: dict[str, int] = dict(STRICT_CEILINGS)
 
 CFG_TEST_RE = re.compile(r"^\s*#\[cfg\(\s*test\s*\)\]")
 CFG_NOT_KANI_RE = re.compile(r"^\s*#\[cfg\(\s*not\(\s*kani\s*\)\s*\)\]")
@@ -57,11 +51,13 @@ KANI_MODULE_RE = re.compile(r"\bmod\s+kani_proofs\b|#\[cfg\(\s*kani\s*\)\]")
 
 NAKED_ARC_PAYLOAD_RE = re.compile(r"\bArc\s*<\s*(?:String|Vec\s*<\s*u8\s*>)\s*>")
 ARC_PATHBUF_RE = re.compile(r"\bArc\s*<\s*PathBuf\s*>")
-ARC_USE_OR_TYPE_RE = re.compile(r"\b(?:std::sync::)?Arc\b")
+ARC_USE_OR_TYPE_RE = re.compile(r"\bArc\b")
 SHARED_IMPORT_RE = re.compile(r"\b(?:SharedPath|SharedStr|SharedPaths|values::shared)\b")
 GENERIC_FN_RE = re.compile(r"\bfn\s+([a-zA-Z0-9_]+)\s*<([^>]*)>")
 FN_TRAIT_BOUND_RE = re.compile(r"\bFn(?:Mut|Once)?\b")
-THIN_DELEGATE_RE = re.compile(r"\b(?:Box::new|_inner\(|connect_[a-z_]+_boxed|register_)\b")
+THIN_DELEGATE_RE = re.compile(
+    r"(?:\bBox::new\b|[a-z0-9_]+_inner\(|[a-z0-9_]+_boxed\(|\bregister_[a-z0-9_]+\b)"
+)
 
 EXCLUDED_FILE_NAMES = {
     "tests.rs",
@@ -381,12 +377,20 @@ def self_test() -> None:
             encoding="utf-8",
         )
         thin_fns = "\n".join(
-            f"pub fn g{i}<F: FnOnce() + 'static>(cb: F) {{\n    g_inner(Box::new(cb));\n}}"
-            for i in range(30)
+            [
+                f"pub fn g{i}<F: FnOnce() + 'static>(cb: F) {{\n    do_inner(Box::new(cb));\n}}"
+                for i in range(26)
+            ]
+            + [
+                "pub fn h_inner<F: Fn() + 'static>(cb: F) {\n    run_inner(Rc::new(cb));\n}",
+                "pub fn h_boxed<F: Fn() + 'static>(cb: F) {\n    run_boxed(Box::new(cb));\n}",
+                "pub fn h_reg<F: Fn() + 'static>(cb: F) {\n    register_slot(Rc::new(cb));\n}",
+            ]
         )
         (root / "crates/lushtext-ui/src/ui/sample/mod.rs").write_text(thin_fns + "\n", encoding="utf-8")
 
-        assert check(root, strict=True) == [], f"clean tree failed strict check: {check(root, strict=True)}"
+        strict_findings = check(root, strict=True)
+        assert strict_findings == [], f"clean tree failed strict check: {strict_findings}"
 
     print("check-arc-safety self-test passed")
 

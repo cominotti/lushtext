@@ -4445,7 +4445,8 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     // This is an in-memory debounce simulation, not filesystem setup. Window
     // action readiness only needs an active exported window; command-palette
     // indexing should block idle without blocking action introspection.
-    let palette_folder = Arc::new(PathBuf::from("/tmp/lushtext-automation-readiness"));
+    let palette_folder =
+        lushtext_model::values::SharedPath::from("/tmp/lushtext-automation-readiness");
     let palette_file = palette_folder.join("existing.rs");
     window
         .imp()
@@ -4454,7 +4455,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
             lushtext_services::palette::OwnedIndexedFile::new(
                 palette_file.clone(),
                 PaletteFileIdentity::canonical(palette_file),
-                Arc::clone(&palette_folder),
+                palette_folder.clone(),
             ),
         ]));
     window
@@ -11996,7 +11997,9 @@ fn test_workspace_selector_updates_search_and_palette_scope() {
             .workspace_folders
             .borrow()
             .as_ref(),
-        &[left_folder],
+        &[lushtext_model::values::SharedPath::from(
+            left_folder.as_path()
+        )],
     );
 
     dropdown.set_selected(0);
@@ -12026,7 +12029,9 @@ fn test_restored_workspace_scope_narrows_consumers_on_startup() {
             .workspace_folders
             .borrow()
             .as_ref(),
-        &[right_folder],
+        &[lushtext_model::values::SharedPath::from(
+            right_folder.as_path()
+        )],
     );
 }
 

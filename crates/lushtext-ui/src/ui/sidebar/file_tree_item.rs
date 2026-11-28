@@ -10,6 +10,7 @@ use gtk4::glib;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::WorkspaceFolderId;
 use lushtext_services::workspace::file_tree::DirectoryPlaceholder;
 
@@ -17,7 +18,7 @@ use lushtext_services::workspace::file_tree::DirectoryPlaceholder;
 // a private struct (imp) holding data and a public wrapper providing the API.
 mod imp {
     use super::{
-        Cell, DirectoryPlaceholder, ObjectImpl, ObjectSubclass, PathBuf, RefCell,
+        Cell, DirectoryPlaceholder, ObjectImpl, ObjectSubclass, RefCell, SharedPath,
         WorkspaceFolderId, glib,
     };
 
@@ -27,7 +28,7 @@ mod imp {
     #[derive(Default)]
     pub struct FileTreeItem {
         /// Absolute path on disk. `None` for placeholder rows.
-        pub path: RefCell<Option<PathBuf>>,
+        pub path: RefCell<Option<SharedPath>>,
         /// Display name shown in the tree row (file name component of the path).
         pub display_name: RefCell<String>,
         /// Whether this entry is a directory (affects icon and expand behavior).
@@ -68,6 +69,11 @@ glib::wrapper! {
 impl FileTreeItem {
     #[must_use]
     pub fn new(path: PathBuf, is_dir: bool, is_empty: Option<bool>) -> Self {
+        Self::from_shared(SharedPath::from(path), is_dir, is_empty)
+    }
+
+    #[must_use]
+    pub(super) fn from_shared(path: SharedPath, is_dir: bool, is_empty: Option<bool>) -> Self {
         let obj: Self = glib::Object::builder().build();
         obj.imp().display_name.replace(display_name_for_path(&path));
         obj.imp().path.replace(Some(path));
@@ -111,6 +117,15 @@ impl FileTreeItem {
 
     #[must_use]
     pub fn path(&self) -> Option<PathBuf> {
+        self.imp()
+            .path
+            .borrow()
+            .as_ref()
+            .map(SharedPath::to_path_buf)
+    }
+
+    #[must_use]
+    pub(super) fn shared_path(&self) -> Option<SharedPath> {
         self.imp().path.borrow().clone()
     }
 
@@ -120,6 +135,10 @@ impl FileTreeItem {
     }
 
     pub fn set_path(&self, new_path: PathBuf) {
+        self.set_shared_path(SharedPath::from(new_path));
+    }
+
+    pub(super) fn set_shared_path(&self, new_path: SharedPath) {
         self.imp()
             .display_name
             .replace(display_name_for_path(&new_path));

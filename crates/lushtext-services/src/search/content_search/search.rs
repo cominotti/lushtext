@@ -25,6 +25,7 @@ use ignore::{WalkBuilder, WalkState};
 
 use crate::filesystem::metadata as fs_metadata;
 use lushtext_model::budgets::list_budget::{Admission, RetainedBudget};
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::content_search::{
     BEYOND_BUDGET_REPORT_INTERVAL_MS, ContentSearchOptions, SearchEvent, SearchMatch,
     SearchRetention,
@@ -451,7 +452,7 @@ fn search_with_plan_and_limits(
                     let _ = tx.try_send(SearchEvent::Progress(count));
                 }
 
-                let shared_path: Arc<Path> = Arc::from(path.as_path());
+                let shared_path = SharedPath::from(path.as_path());
                 let path_bytes = path.as_os_str().as_encoded_bytes().len();
                 let mut first_of_file = true;
                 let search_result = searcher.search_path(
@@ -468,7 +469,7 @@ fn search_with_plan_and_limits(
                         let match_range = find_match_range(&matcher, content.as_bytes());
 
                         let search_match = SearchMatch::new(
-                            Arc::clone(&shared_path),
+                            shared_path.clone(),
                             line_number,
                             content,
                             match_range,

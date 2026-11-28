@@ -5,19 +5,19 @@
 //! the views' path reconstruction.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use super::arena::force_hash_collisions_for_test;
 use super::traversal::BuildLedger;
 use super::*;
 use crate::filesystem::fixture;
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::palette::{PaletteFileIdentity, PaletteFileIdentityFailure};
 
-fn owned(path: &str, folder: &Arc<PathBuf>) -> OwnedIndexedFile {
+fn owned(path: &str, folder: &SharedPath) -> OwnedIndexedFile {
     OwnedIndexedFile::new(
         PathBuf::from(path),
         PaletteFileIdentity::canonical(PathBuf::from(path)),
-        Arc::clone(folder),
+        folder.clone(),
     )
 }
 
@@ -65,7 +65,7 @@ fn build_ledger_accepts_exact_limits_and_rejects_one_byte_over() {
 
 #[test]
 fn incremental_long_path_batch_never_crosses_the_installed_policy() {
-    let folder = Arc::new(PathBuf::from("/synthetic/incremental-byte-policy"));
+    let folder = SharedPath::from("/synthetic/incremental-byte-policy");
     let mut index = FileIndex::default();
     let mut ledger = index.incremental_mutation_ledger();
     let long = "x".repeat(250);
@@ -74,7 +74,7 @@ fn incremental_long_path_batch_never_crosses_the_installed_policy() {
         let file = OwnedIndexedFile::new(
             path,
             PaletteFileIdentity::Unavailable(PaletteFileIdentityFailure::NotFound),
-            Arc::clone(&folder),
+            folder.clone(),
         );
         index.add_file_for_bounded_batch(file, &mut ledger);
         assert!(ledger.peak_retained_bytes() <= MAX_FILE_INDEX_RETAINED_BYTES);
@@ -198,7 +198,7 @@ fn forced_hash_collisions_change_no_result() {
     let exclusion = OpenTabExclusion::new(&collided, &open);
     assert_eq!(exclusion.excluded(), 1);
     // A duplicate add is refused, a new one admitted, under collisions too.
-    let folder = Arc::new(root.clone());
+    let folder = SharedPath::from(root.as_path());
     collided.add_path(&root.join("a/two.rs"), &folder);
     assert_eq!(collided.len(), expected.len());
     fixture::write_text(&root.join("b/four.rs"), "");
@@ -213,7 +213,7 @@ fn fixture_canonical(path: &std::path::Path) -> PathBuf {
 
 #[test]
 fn views_rebuild_display_relative_and_identity() {
-    let folder = Arc::new(PathBuf::from("/home/user/project"));
+    let folder = SharedPath::from("/home/user/project");
     let index = FileIndex::from(vec![
         owned("/home/user/project/src/main.rs", &folder),
         owned("/home/user/project/Cargo.toml", &folder),
@@ -246,14 +246,14 @@ fn views_rebuild_display_relative_and_identity() {
 fn a_non_utf8_name_keeps_its_exact_bytes() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
-    let folder = Arc::new(PathBuf::from("/synthetic/raw"));
+    let folder = SharedPath::from("/synthetic/raw");
     let first = folder.join(OsStr::from_bytes(b"caf\xe9.rs"));
     let second = folder.join(OsStr::from_bytes(b"caf\xea.rs"));
     let index = FileIndex::from_paths([first.clone(), second.clone()].into_iter().map(|path| {
         (
             path.clone(),
             PaletteFileIdentity::canonical(path),
-            Arc::clone(&folder),
+            folder.clone(),
         )
     }));
     let paths: Vec<_> = index.files().map(|file| file.path()).collect();
@@ -294,7 +294,7 @@ fn a_file_moved_out_of_a_renamed_nested_folder_keeps_its_folder() {
     index.rename_path(&renamed.join("one.rs"), &moved);
     let rows: Vec<_> = index
         .files()
-        .map(|file| (file.path(), file.workspace_folder().as_ref().clone()))
+        .map(|file| (file.path(), file.workspace_folder().to_path_buf()))
         .collect();
     assert_eq!(
         rows,

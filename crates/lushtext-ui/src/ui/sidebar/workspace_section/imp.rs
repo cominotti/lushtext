@@ -329,7 +329,7 @@ impl LushtextWorkspaceSection {
     pub(crate) fn context_target_evidence(&self) -> (Option<PathBuf>, Option<WorkspaceFolderId>) {
         let target = self.context_target.borrow();
         (
-            target.as_ref().map(|target| target.path.clone()),
+            target.as_ref().map(|target| target.path.to_path_buf()),
             target
                 .as_ref()
                 .and_then(|target| target.workspace_folder_id.clone()),

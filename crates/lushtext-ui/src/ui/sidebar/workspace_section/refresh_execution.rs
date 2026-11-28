@@ -754,7 +754,7 @@ impl LushtextWorkspaceSection {
         for index in 0..top_level_store.n_items() {
             if let Some(item) = top_level_store.item(index).and_downcast::<FileTreeItem>()
                 && item.is_dir()
-                && let Some(folder_path) = item.path()
+                && let Some(folder_path) = item.shared_path()
             {
                 if super::folder_execution::top_level_folder_row_is_expanded(self, index) {
                     continue;

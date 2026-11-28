@@ -22,7 +22,7 @@ use std::sync::Arc;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{self, glib};
-use lushtext_model::values::RetirementGeneration;
+use lushtext_model::values::{RetirementGeneration, SharedPath};
 use lushtext_model::workspace::content_search::SearchQuerySpec;
 
 use super::LushtextSearchPanel;
@@ -109,9 +109,9 @@ pub struct SearchRetirementSliceObservation {
 struct RetiredSearchGtkState {
     generation: RetirementGeneration,
     root_store: gtk4::gio::ListStore,
-    file_groups: BTreeMap<std::sync::Arc<std::path::Path>, SearchFileGroup>,
+    file_groups: BTreeMap<SharedPath, SearchFileGroup>,
     match_rows: Vec<Option<gtk4::TreeListRow>>,
-    file_rows: BTreeMap<std::sync::Arc<std::path::Path>, gtk4::TreeListRow>,
+    file_rows: BTreeMap<SharedPath, gtk4::TreeListRow>,
     search_matches: Vec<lushtext_model::workspace::content_search::SearchMatch>,
     accepted_matches: Option<Arc<Vec<lushtext_model::workspace::content_search::SearchMatch>>>,
     accepted_match_rows: Vec<lushtext_model::workspace::content_search::SearchMatch>,
