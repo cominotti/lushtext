@@ -56,7 +56,7 @@ SHARED_IMPORT_RE = re.compile(r"\b(?:SharedPath|SharedStr|SharedPaths|values::sh
 GENERIC_FN_RE = re.compile(r"\bfn\s+([a-zA-Z0-9_]+)\s*<([^>]*)>")
 FN_TRAIT_BOUND_RE = re.compile(r"\bFn(?:Mut|Once)?\b")
 THIN_DELEGATE_RE = re.compile(
-    r"(?:\bBox::new\b|[a-z0-9_]+_inner\(|[a-z0-9_]+_boxed\(|\bregister_[a-z0-9_]+\b)"
+    r"\bBox::new\b|[a-z0-9_]_(?:inner|boxed)\(|\bregister_[a-z0-9]"
 )
 
 EXCLUDED_FILE_NAMES = {
