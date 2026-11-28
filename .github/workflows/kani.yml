@@ -30,6 +30,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  scope:
+    name: Change Scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only || 'false' }}
+    steps:
+      - uses: actions/checkout@v6
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+
+      - name: Classify pull request diff
+        id: classify
+        if: github.event_name == 'pull_request'
+        run: |
+          if ./scripts/precommit-scope.py docs-only-range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   shards:
     name: Kani Shard Table
     runs-on: ubuntu-latest
@@ -49,7 +71,7 @@ jobs:
 
   kani:
     name: Kani Proof Harnesses (${{ matrix.shard }})
-    needs: shards
+    needs: [shards, scope]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -64,9 +86,15 @@ jobs:
       image: registry.fedoraproject.org/fedora:45
 
     steps:
+      - name: Skip Kani on docs-only pull request
+        if: needs.scope.outputs.docs_only == 'true'
+        run: echo "Docs-only pull request; Kani skipped while preserving required check status."
+
       - uses: actions/checkout@v6
+        if: needs.scope.outputs.docs_only != 'true'
 
       - name: Install system dependencies
+        if: needs.scope.outputs.docs_only != 'true'
         run: |
           dnf --disablerepo=fedora-cisco-openh264 install -y \
             gtk4-devel \
@@ -80,9 +108,11 @@ jobs:
             python3
 
       - name: Install Rust toolchain
+        if: needs.scope.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: Swatinem/rust-cache@v2
+        if: needs.scope.outputs.docs_only != 'true'
         with:
           shared-key: fedora-45-kani
           # Only the registry is worth caching here: nothing in this job builds
@@ -96,6 +126,7 @@ jobs:
 
       - name: Restore the Kani install
         id: kani-install
+        if: needs.scope.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           # `cargo kani setup` unpacks its bundle into ~/.kani and installs the
@@ -109,6 +140,7 @@ jobs:
           key: kani-${{ env.KANI_VERSION }}-fedora-45
 
       - name: Install Kani
+        if: needs.scope.outputs.docs_only != 'true'
         # The official Kani action assumes an Ubuntu runner; this lane runs in
         # the same Fedora container as every other job, so install directly.
         # A restored install is used only if it runs.
@@ -121,12 +153,13 @@ jobs:
           fi
 
       - name: Run Kani harnesses
+        if: needs.scope.outputs.docs_only != 'true'
         run: >-
           make kani KANI_VERSION="${KANI_VERSION}" KANI_SHARD="${{ matrix.shard }}"
           KANI_MEASURE="kani-measure-${{ matrix.shard }}.json"
 
       - name: Upload the shard measurement
-        if: always()
+        if: always() && needs.scope.outputs.docs_only != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: kani-measure-${{ matrix.shard }}

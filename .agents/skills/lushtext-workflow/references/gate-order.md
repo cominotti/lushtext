@@ -74,12 +74,21 @@ under widget-lane load produces timeouts that read as survivors.
 
 ## Smoke lanes, last and from clean roots
 
-**Any edit under `crates/lushtext-ui/src/ui/`, `crates/lushtext/tests/widget/`,
-`resources/ui/` or `resources/style/` voids the accessibility, visual, and
-visual-geometry summaries.** Those gates key on the **directory prefix**, not on
-`*.rs`, so even a module-layout `AGENTS.md` under `ui/` invalidates all three.
-Run them **last**, after every source edit is final, sequentially, each from a
-clean artifact root:
+**Any edit under `crates/lushtext-ui/src/ui/`, `resources/ui/`, or
+`resources/style/` voids the accessibility, visual, and visual-geometry
+summaries.** Those gates key on the **directory prefix**, not on `*.rs`, so even
+a module-layout `AGENTS.md` under `ui/` invalidates all three (while edits solely
+under `crates/lushtext/tests/widget/` are excluded from smoke fingerprints per
+Decision 7 and remain verified by static accessibility checks +
+`make test-widget-headless`). Run the three smokes **last** — after code review
+fixes (**Review-Before-Smoke**) — via one parallel invocation from clean
+artifact roots (or individually in sequence):
+
+```bash
+make smoke-ui
+```
+
+Or sequentially:
 
 ```bash
 rm -rf build/smoke/visual-geometry && make visual-geometry-smoke
@@ -88,17 +97,22 @@ rm -rf build/smoke/visual         && make visual-smoke
 ```
 
 An early `SKIP:` (the visual smoke's missing-binary check, for example) exits
-before the lane writes a summary, so without the `rm -rf` the previous run's
-summary would read as a fresh result. A skipped, filtered,
+before the lane writes a summary, so without clean artifact roots the previous
+run's summary would read as a fresh result. A skipped, filtered,
 name-only, or rectangle-only visual-geometry run does not count as proof.
 
 ## At ship time
 
-Staging files changes the visual-proof digest. If `make pre-commit` fails on
-`check-visual-proof-policy` after you stage, re-run `make visual-geometry-smoke`
-against the staged tree — do not unstage to recover the earlier green. Commit
-through `scripts/heavy.sh`, and never with `--no-verify` or
-`-c commit.gpgsign=false` (testing.md, "Gate Order Before a Commit"; `git.md`).
+`changed_files_digest` unions `origin/main...HEAD` with working-tree status, so
+a `make smoke-ui` pass survives `git add` and `git commit` as long as file bytes
+remain unchanged. Commit locally as static checkpoints (`pre-commit` enforces
+static checks only and reuses a clean-worktree tree stamp), then run
+`make check-smoke-proof` and `make verify-local` (or push, which triggers
+`.githooks/pre-push` -> `make check-smoke-proof`). If `make check-smoke-proof`
+fails after adding or staging files, re-run `make smoke-ui` against the final
+tree — do not unstage to recover the earlier green. Commit through
+`scripts/heavy.sh`, and never with `--no-verify` or `-c commit.gpgsign=false`
+(`testing.md`, "Gate Order Before a Commit"; `git.md`).
 
 Two acceptance gates cannot be discharged headlessly and are **user-gated**: the
 live `make run` walkthrough against restored workspaces, watching stderr for

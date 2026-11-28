@@ -101,6 +101,13 @@ memory budget, and run it detached.
   any verdict round**, with a reason, and the spec review confirms it. After
   the first verdict round only the maintainer changes it, so a missed bar
   cannot be relabelled.
+  - `Timing: none (zero-cost structural refactor: <reason>)`: narrow exemption
+    available only to pure structural or type-safety refactors on timed paths
+    (for example `#[repr(transparent)]` value wrappers, typed error enums, or
+    crate/module splits with no control-flow, allocation, clone, lock, or
+    dispatch change). Both independent spec review (intent) and final/code
+    review (verifying the implemented diff introduces no runtime overhead) must
+    confirm the exemption explicitly; otherwise a `measure.sh` verdict is owed.
   - `Verdict class: improvement-gated`: the change's purpose is the
     improvement, or its mechanism trades metrics so branch and `main` are not
     ordered (completion time against worst frame, for example). Its verdict
@@ -142,9 +149,14 @@ memory budget, and run it detached.
 
 ## Checkpoints
 
-Commit and push per task group during implementation, so work survives an
-interruption. A resumed stage reads the branch, `tasks.md` and the handoff
-directory before redoing anything.
+Commit locally per task group during implementation without running UI smokes,
+so work survives an interruption. Because `.githooks/pre-push` enforces
+`make check-smoke-proof` once a branch carries smoke-relevant diffs against
+`origin/main`, standalone Review-Before-Smoke workflows complete code review
+and fixes before running `make smoke-ui` and pushing the UI branch (while
+multi-stage pipelines that push UI commits before review run `make smoke-ui`
+before pushing them). A resumed stage reads the branch, `tasks.md` and the
+handoff directory before redoing anything.
 
 ## Shared-machine agent work
 

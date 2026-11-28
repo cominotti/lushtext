@@ -39,18 +39,37 @@ RELEVANT_EXACT_PATHS = (
 
 RELEVANT_PREFIXES = (
     "crates/lushtext-ui/src/ui/",
-    "crates/lushtext/tests/widget/",
     "resources/style/",
     "resources/ui/",
 )
 
 
-def source_fingerprint(repo_root: Path) -> dict[str, object]:
+def relevant_diff(repo_root: Path, base_ref: str) -> tuple[list[str], bool]:
+    """Return sorted `is_relevant` paths changed between `base_ref` and HEAD."""
+    if not base_ref:
+        return [], False
+    verify = git_output(repo_root, ["rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}"])
+    if not verify:
+        return [], False
+    lines, available = git_lines_checked(
+        repo_root, ["diff", "--name-only", "--no-renames", f"{base_ref}...HEAD"]
+    )
+    if not available and not git_output(repo_root, ["merge-base", base_ref, "HEAD"]):
+        lines, available = git_lines_checked(
+            repo_root, ["diff", "--name-only", "--no-renames", base_ref, "HEAD"]
+        )
+    if not available:
+        return [], False
+    relevant = sorted({p.replace("\\", "/") for p in lines if is_relevant(p.replace("\\", "/"))})
+    return relevant, True
+
+
+def source_fingerprint(repo_root: Path, base_ref: str | None = None) -> dict[str, object]:
     repo_root = repo_root.resolve()
     entries = list(source_entries(repo_root))
     status, status_available = relevant_status(repo_root)
     head = git_output(repo_root, ["rev-parse", "HEAD"]) or None
-    return {
+    payload: dict[str, object] = {
         "schema_version": 2,
         "sha256": entries_digest(entries),
         "git_head": head,
@@ -64,6 +83,11 @@ def source_fingerprint(repo_root: Path) -> dict[str, object]:
         "path_count": len(entries),
         "relevant_status": status,
     }
+    if base_ref is not None:
+        branch_changes, branch_available = relevant_diff(repo_root, base_ref)
+        payload["branch_relevant_changes"] = branch_changes
+        payload["branch_status_available"] = branch_available
+    return payload
 
 
 def entries_digest(entries: list[dict[str, object]]) -> str:
@@ -128,9 +152,11 @@ def relevant_status(repo_root: Path) -> tuple[list[str], bool]:
     for line in lines:
         path = line[3:]
         if " -> " in path:
-            _old, path = path.split(" -> ", 1)
-        normalized = path.replace("\\", "/")
-        if is_relevant(normalized):
+            old, new = path.split(" -> ", 1)
+            candidates = (old, new)
+        else:
+            candidates = (path,)
+        if any(is_relevant(p.replace("\\", "/")) for p in candidates if p):
             rows.append(line)
     return sorted(rows), available
 

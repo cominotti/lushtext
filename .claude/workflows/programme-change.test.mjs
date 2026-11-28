@@ -816,22 +816,15 @@ const CASES = {
     const ro = await run({ ...RO }, { verify: () => ({ ...DEFAULTS.verify(), test_exit: 1 }) })
     check(has(ro.result.stopped, 'no clean make test pass'), JSON.stringify(ro.result))
   },
-  // Probe C7 #2: merge commits run no pre-commit hook, so a merge that brings
-  // smoke-relevant files in after the branch's last hook-checked commit
-  // carrying one leaves a tree no smoke proved; then the smokes are owed as
-  // records on the apply tree, before the merge and after a no-op one.
-  async 'C7 #2: smoke records are owed on the apply tree when a merge brought smoke-relevant files in'() {
+  // Pre-commit enforces static checks only while live smokes move to pre-push
+  // and verify-local: any branch touching smoke-relevant files in
+  // origin/main...HEAD (merge or non-merge) owes all three smoke records.
+  async 'smokeCheck requires smoke records for every UI branch commit (no hook shortcut)'() {
     const r = await run({ ...BASE, mode: 'new' })
     for (const label of ['verify:demo', 'apply:demo']) {
       const p = r.prompts[label]
-      check(has(p, 'a.is_relevant(p)') && has(p, '"--merges"') && has(p, '"--no-merges"') && has(p, 'origin/main...HEAD'), `${label}: ${p}`)
-      // Only a later commit under the UI prefixes clears a merge: a file there is
-      // smoke-relevant and visual-sensitive, so the hook demands all three
-      // smokes; an exact path such as docs/accessibility.md demands two.
-      check(has(p, 'ui = lambda ps: any(p.startswith(a.RELEVANT_PREFIXES) for p in ps)') && has(p, 'not any(ui(g("diff-tree"'), `${label}: a later commit with only exact-path files clears the merge: ${p}`)
-      // Only the branch's own commits clear it: a main commit that a later
-      // merge brought in ran its hook on main's tree, not the branch's.
-      check(has(p, 'g("rev-list", "--first-parent", "--no-merges", m + "..HEAD", "^origin/main")'), `${label}: a commit a later merge brought in clears the merge: ${p}`)
+      check(has(p, 'a.is_relevant(p)') && has(p, 'origin/main...HEAD'), `${label}: ${p}`)
+      check(!has(p, '"hook"'), `${label}: must not rely on removed pre-commit hook shortcut: ${p}`)
     }
     // The apply stage runs the check even when it made no commit.
     check(has(r.prompts['apply:demo'], 'or, when you made none, before your final gates'), r.prompts['apply:demo'])
@@ -845,11 +838,12 @@ const CASES = {
     // After a no-op merge the post-merge check owes the same records.
     const post = await run({ ...BASE, mode: 'new' }, { verify: () => ({ ...DEFAULTS.verify(), smokes: 'records', smoke_gates: recorded }), postmerge: () => postmergeReading({ mergedIn: false }) })
     check(has(post.result.stopped, 'make visual-smoke'), `a no-op merge of a tree that owed smoke records owed none after the merge: ${JSON.stringify(post.result)}`)
-    // Proven by the hook, or no smoke-relevant file: no records owed.
-    for (const smokes of ['hook', 'none']) {
-      const q = await run({ ...BASE, mode: 'new' }, { verify: () => ({ ...DEFAULTS.verify(), smokes }) })
-      check(q.result.verdict === 'merged' && !q.result.stopped, `${smokes}: ${JSON.stringify(q.result)}`)
-    }
+    // Removed `"hook"` shortcut must be treated as owing smoke records (not skipped).
+    const hookDenied = await run({ ...BASE, mode: 'new' }, { verify: () => ({ ...DEFAULTS.verify(), smokes: 'hook' }) })
+    check(has(hookDenied.result.stopped, 'make visual-smoke'), `hook shortcut was still accepted: ${JSON.stringify(hookDenied.result)}`)
+    // Only `none` (no smoke-relevant file in origin/main...HEAD) waives smoke records.
+    const q = await run({ ...BASE, mode: 'new' }, { verify: () => ({ ...DEFAULTS.verify(), smokes: 'none' }) })
+    check(q.result.verdict === 'merged' && !q.result.stopped, `none: ${JSON.stringify(q.result)}`)
   },
   async 'F9: a worktree path is anchored and holds only safe characters'() {
     for (const worktree of ['/re po/.claude/worktrees/demo', '/repo/$(id)/.claude/worktrees/demo', '/repo/../x/.claude/worktrees/demo', 'repo/.claude/worktrees/demo', "/repo/'x'/.claude/worktrees/demo", '/.claude/worktrees/demo']) {

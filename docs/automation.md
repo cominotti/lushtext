@@ -408,15 +408,18 @@ theme, word wrap, fixture kind, direction, or viewport position cannot be
 inferred, it exits with `missing-field` and asks for explicit overrides.
 Optional portal screenshots are context-only; invariant proof is the
 Automation1 snapshot plus the generated headless visual-geometry replay.
-`make check-visual-proof-policy` is the fast companion gate: when local
-visual-sensitive files have changed, it requires a passing
-unfiltered `build/smoke/visual-geometry/summary.json` whose recorded
-visual-sensitive diff fingerprint still matches the current worktree and whose
+`make check-visual-proof-policy` is the fast static parity gate (running both the
+Python and Rust visual-proof predicate self-tests in `make check-policy`), while
+`make check-smoke-proof` (enforced by `.githooks/pre-push` and
+`make verify-local`) checks branch-level live proof: when visual-sensitive
+files changed against `origin/main` or locally (`crates/lushtext/tests/widget/`
+excluded per Decision 7), it requires a passing unfiltered
+`build/smoke/visual-geometry/summary.json` whose recorded visual-sensitive
+diff fingerprint still matches the branch + worktree and whose
 `pixel_verified_invariant_ids` cover any named pixel invariants required by the
-changed files before `make check-policy` can pass. The Make target now runs
-`cargo gtk-proof policy`; `scripts/check-visual-proof-policy.py` remains a
-compatibility shim for command callers and an importable metadata helper for the
-Python live runner.
+changed files. `make check-smoke-proof` runs `cargo gtk-proof policy --base-ref ...`;
+`scripts/check-visual-proof-policy.py` remains a compatibility shim for command
+callers and an importable metadata helper for the Python live runner.
 
 For parity investigation or a diagnostic cross-check, run the legacy visual
 runner through Rust supervision explicitly:

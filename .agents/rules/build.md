@@ -91,33 +91,59 @@ pre-commit hook, CI, and contributor docs:
   --all-targets --all-features -- -D warnings`, identical everywhere unless a
   narrower command is documented as a non-blocking smoke shortcut;
 - the fast policy audits, `make check-policy` (filesystem boundary, Blueprint
-  drift and template contract, workflow boundaries, accessibility and visual
-  proof policy, terminology, automation docs, the CI job timeouts
-  (`check-workflow-timeouts`), the CI Flatpak build mechanism
+  drift and template contract, workflow boundaries, static accessibility policy
+  (`--static-only`), visual-proof parity self-tests (`--self-test`), Python
+  hygiene (`make check-python-hygiene`), terminology, automation docs, the CI
+  job timeouts (`check-workflow-timeouts`), the CI Flatpak build mechanism
   (`check-flatpak-ci-builds`), and more);
-- the rustdoc lint gate (run by hand; [`testing.md`](./testing.md));
+- `make check-smoke-proof` — branch-level live smoke freshness over
+  `origin/main...HEAD` (enforced by `.githooks/pre-push` and `make verify-local`,
+  closing S7(b));
+- `make verify-local-fast` and `make verify-local` — full local CI parity
+  (default-feature bin check, strict `rustdoc` gate, `cargo bench --no-run`,
+  `cargo deny`, unit/integration/property tests, fuzz corpus replay, conditional
+  GTK Lush checks, and `check-smoke-proof`; setting `GATE_TREES_CHANGE=<C>` and
+  `VERIFY_RUN_SMOKES=1` runs `make check`, `make test`, and `make smoke-ui`
+  once each and records all canonical gate names in one pass);
+- `make check-policy-docs` — pure-script subset of `check-policy` (zero Cargo
+  compilation) shared by `make pre-commit-docs` and CI `Lint (Docs-only)`;
+- `make smoke-ui` — single pre-build + parallel execution (`SMOKE_PARALLEL=1`,
+  `0` for serial) of `accessibility-smoke`, `visual-smoke`, and
+  `visual-geometry-smoke` (with optional `GATE_TREES_CHANGE=<change>` to record
+  canonical `gate-trees.sh` entries safely under `flock`);
 - `cargo deny check advisories bans sources licenses`;
 - `openspec validate --all --strict` for OpenSpec changes and specs.
 
 `make check` runs rustfmt (`make check-fmt`, which also covers the widget test
-modules), all-feature Clippy and `make check-policy`; `make pre-commit` is the
-same gate. The repo-managed Git hooks live under `.githooks/`; install them
-with `make install-git-hooks`, which sets `core.hooksPath` for this checkout.
-The pre-commit hook runs `make pre-commit`, except for a **docs-only commit**:
-when `scripts/precommit-scope.py docs-only` finds that the commit is not a merge
-and every staged path (both sides of a rename, and deletions) is under `docs/`,
-`openspec/`, `.claude/` or `.agents/`, or is a `*.md` at the repository root, the
-hook runs `make pre-commit-docs` (rustfmt and `make check-policy`) and skips
-Clippy, which no such path can affect. Anything else, including an empty commit,
-a merge, `*.md` under `crates/`, and any git error, runs the full gate, so the
-skip fails closed. `make check-precommit-scope` (in `make check-policy`) keeps
-the allowlist honest: it fails when a compile-time input of a Rust source
-resolves to an allowlisted path (an `include_str!`/`include_bytes!`/`include!`
-argument or a `#[path]` attribute, resolved against its file, or a path a
-`build.rs` names; an include it cannot resolve fails when it names one). Runtime
-reads of documentation stay allowed. `make pre-commit` and `make check` always
-include Clippy. A docs-only commit still runs `check-policy`, which builds two
-crates cold in a fresh worktree, so commit through `scripts/heavy.sh` either way.
+modules), all-feature Clippy, `make check-policy`, and records a 30-minute
+working-tree `git write-tree` stamp via a temporary index (`scripts/precommit-scope.py
+stamp-write`, so `edit -> make check -> git add -> git commit` hits cleanly
+when all working-tree changes are staged, while partial staging or post-check
+edits fail closed; refuses `MERGE_HEAD`); `make pre-commit` is the same static
+gate. The repo-managed Git hooks live under `.githooks/`;
+install them with `make install-git-hooks`, which sets `core.hooksPath` for
+this checkout and ensures both `pre-commit` and `pre-push` are executable.
+The pre-commit hook reuses the tree stamp first via
+`scripts/precommit-scope.py stamp-valid` (requiring a clean working tree whose
+`git write-tree` matches the stamped working-tree hash within 1800 s, zero
+untracked files, no `MERGE_HEAD`, and `LUSHTEXT_SKIP_PRECOMMIT_STAMP != 1`),
+else on a **docs-only commit** (when `scripts/precommit-scope.py docs-only` finds
+no merge and every staged path is under `docs/`, `openspec/`, `.claude/` or
+`.agents/`, or is a `*.md` at the repository root) runs `make pre-commit-docs`
+(`check-fmt` and zero-compile `check-policy-docs`, ~3 s), and otherwise runs
+`make pre-commit`. Anything else, including an empty commit, a merge, `*.md`
+under `crates/`, and any git error, runs the full gate, so the skip fails closed. `.githooks/pre-push` runs
+`make check-smoke-proof` on non-delete, non-tag pushes so smoke-relevant branch
+diffs cannot reach remote branches without fresh smokes. `make
+check-precommit-scope` (in `make check-policy`) keeps the allowlist honest: it
+fails when a compile-time input of a Rust source resolves to an allowlisted
+path (an `include_str!`/`include_bytes!`/`include!` argument or a `#[path]`
+attribute, resolved against its file, or a path a `build.rs` names; an include
+it cannot resolve fails when it names one), and runs `scripts/test-git-hooks.sh`
+against isolated scratch repositories. Runtime reads of documentation stay
+allowed. `make pre-commit` and `make check` always include Clippy. A docs-only
+commit still runs `check-policy`, which builds two crates cold in a fresh
+worktree, so commit through `scripts/heavy.sh` either way.
 
 `make check-agent-docs` verifies the `services::filesystem` guidance in rules
 and skills, runs the raw filesystem no-leftovers audit, self-tests rename-safe
@@ -1091,17 +1117,23 @@ measurement and lint jobs run `fedora:45` (the shipped GNOME 51 toolkit); only
 floor's toolkit behaviour stays pinned by the axioms. The Snap change must run
 the widget suite on its platform first.
 
-- `.github/workflows/ci.yml` — `Lint` (rustfmt, all-targets/all-features
-  Clippy, filesystem-boundary audit, workflow-timeout policy, Blueprint drift
-  and contract, the rustdoc gate, and the default-feature
+- `.github/workflows/ci.yml` — `Scope` (`scripts/precommit-scope.py docs-only-range`),
+  `Lint Docs` (docs-only PR check-policy), `Lint` (rustfmt, all-targets/all-features
+  Clippy, filesystem-boundary audit, workflow-timeout policy, Python hygiene,
+  Blueprint drift and contract, the rustdoc gate, and the default-feature
   `cargo check -p lushtext --bins --locked`), `Non-widget Tests`, `GTK Axioms`
   and `GTK Axioms (GNOME 50 floor)` (two jobs rather than a matrix, so the
-  shipped-runtime check keeps its name), `Widget Shard Table`,
-  `Widget Tests (<shard>)`, `Property Tests` (keep it separate from the
-  non-widget and mutation jobs), `Bench Compile`, and `Dependency Policy`
-  (`cargo deny check advisories bans sources licenses`). Required checks on
-  `main` include `GTK Axioms`, `GTK Axioms (GNOME 50 floor)` and the Kani
-  `widgets-geometry`, `core-geometry-policies` and `core-minimap-fit` shards.
+  shipped-runtime check keeps its name; both short-circuit heavy steps on
+  docs-only PRs while still emitting green `Success` for Ruleset `23911547`),
+  `Widget Shard Table`, `Widget Tests (<shard>)`, `Property Tests` (keep it
+  separate from the non-widget and mutation jobs), `Bench Compile`, and
+  `Dependency Policy` (`cargo deny check advisories bans sources licenses`).
+  `.github/workflows/kani.yml` also guards `scope` similarly (keeping its three
+  ruleset-required matrix jobs emitting green `Success` on docs-only PRs), and
+  `flatpak.yml`, `snap.yml`, and `sonarqube.yml` skip heavy build/analysis jobs
+  on docs-only PRs. Required checks on `main` include `GTK Axioms`, `GTK Axioms
+  (GNOME 50 floor)` and the Kani `widgets-geometry`, `core-geometry-policies`
+  and `core-minimap-fit` shards.
 - **Widget shards.** `scripts/widget-shards.py` is the single source of truth
   for membership; its docstring documents the parallel local run, logs,
   summary and retries. A test is owned by the shard naming it explicitly, else

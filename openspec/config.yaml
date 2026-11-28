@@ -27,13 +27,13 @@ rules:
     - Record every decision with its rationale and the alternatives rejected, with their evidence.
     - Make every budget exception explicit, measured and attributed to its owner (LushText, GTK, GtkSourceView, Pango, Libadwaita or the test renderer).
     - List the ledger axioms the change relies on; new toolkit behaviour gets a new axiom.
-    - "For a change on a timed path, state the measurement protocol and pass bar before measuring (verification-runs.md); otherwise write 'Timing: none (no timed path touched)'."
+    - "For a change on a timed path, state the measurement protocol and pass bar before measuring (verification-runs.md), or declare the dual-reviewed 'Timing: none (zero-cost structural refactor: <reason>)' exemption; otherwise write 'Timing: none (no timed path touched)'."
   specs:
     - Keep each new or rewritten requirement under 500 characters, with examples, edge cases and figures in scenarios. A MODIFIED requirement already over the limit is shortened when it is touched, keeping every scenario name.
     - Under a MODIFIED requirement keep every existing scenario name exactly; add scenarios instead of renaming them.
   tasks:
     - "When behaviour changes, put the failing-first tests before the code that makes them pass and say where each must fail; a docs- or tooling-only change says 'Tests: none (no behaviour change)'."
     - "State the Kani scope per verification-runs.md: 'Kani: none (no proven module touched)' or the shards whose harness inputs change."
-    - "State the timing scope per verification-runs.md: 'Timing: none (no timed path touched)' or the affected cases."
-    - Group tasks so each group ends in a signed commit and a push.
+    - "State the timing scope per verification-runs.md: 'Timing: none (no timed path touched)', 'Timing: none (zero-cost structural refactor: <reason>)', or the affected cases."
+    - Group tasks by deliverable phase (Review-Before-Smoke; batch UI edits into the final implementation phase before `make smoke-ui`), ending in signed commits (`git commit -S`) and pushing once `pre-push` gates pass.
     - Include the documentation updates documentation.md requires.

@@ -100,6 +100,7 @@ def parse_args() -> argparse.Namespace:
         default=REPO_ROOT / "scripts/visual-geometry-scenarios",
     )
     parser.add_argument("--case-filter", help="Run only cases whose id contains this text.")
+    parser.add_argument("--base-ref", help="Optional git base ref (e.g. origin/main) for diff metadata.")
     parser.add_argument("--internal-run", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--mutter-child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--case-json", type=Path, help=argparse.SUPPRESS)
@@ -385,7 +386,9 @@ def outer_run(args: argparse.Namespace) -> int:
         "animation_frame_sample_count": sum(
             int(item.get("animation_frame_sample_count") or 0) for item in results
         ),
-        "visual_proof_policy": visual_proof_policy.visual_proof_policy_metadata(),
+        "visual_proof_policy": visual_proof_policy.visual_proof_policy_metadata(
+            base_ref=args.base_ref
+        ),
         "cases": results,
     }
     (args.artifact_dir / "summary.json").write_text(

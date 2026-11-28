@@ -6,13 +6,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from accessibility_source_fingerprint import entries_digest, source_entries, source_fingerprint
+from accessibility_source_fingerprint import (
+    entries_digest,
+    is_relevant,
+    relevant_status,
+    source_entries,
+    source_fingerprint,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +52,15 @@ def main() -> int:
         action="store_true",
         help="also inspect the current tree for helper bypasses and matrix/docs drift",
     )
+    parser.add_argument(
+        "--static-only",
+        action="store_true",
+        help="run static accessibility guardrails without requiring smoke summary freshness",
+    )
+    parser.add_argument(
+        "--base-ref",
+        help="optional git base ref (e.g. origin/main) to require smoke freshness for committed branch changes",
+    )
     args = parser.parse_args()
 
     if args.self_test:
@@ -52,7 +69,9 @@ def main() -> int:
     added_lines = collect_added_lines()
     findings = check_added_lines(added_lines, current_file_texts(added_lines))
     if args.strict_current_tree:
-        findings.extend(check_current_tree())
+        findings.extend(
+            check_current_tree(static_only=args.static_only, base_ref=args.base_ref)
+        )
     if findings:
         print("Accessibility policy check failed:", file=sys.stderr)
         for finding in findings:
@@ -167,13 +186,18 @@ def check_added_lines(added_lines: list[AddedLine], file_texts: dict[str, str]) 
     return findings
 
 
-def check_current_tree() -> list[Finding]:
+def check_current_tree(
+    *,
+    static_only: bool = False,
+    base_ref: str | None = None,
+) -> list[Finding]:
     findings: list[Finding] = []
     check_current_direct_accessibility_calls(findings)
     check_current_row_factory_policy(findings)
     check_smoke_matrix_contracts(findings)
     check_manual_orca_contract(findings)
-    check_smoke_summary_freshness(findings)
+    if not static_only:
+        check_smoke_summary_freshness(findings, base_ref=base_ref)
     return findings
 
 
@@ -322,9 +346,12 @@ def check_smoke_matrix_contracts(findings: list[Finding]) -> None:
             )
 
 
-def check_smoke_summary_freshness(findings: list[Finding]) -> None:
-    current_fingerprint = source_fingerprint(REPO_ROOT)
-    if not smoke_summary_freshness_required(current_fingerprint):
+def check_smoke_summary_freshness(
+    findings: list[Finding],
+    base_ref: str | None = None,
+) -> None:
+    current_fingerprint = source_fingerprint(REPO_ROOT, base_ref=base_ref)
+    if not smoke_summary_freshness_required(current_fingerprint, base_ref=base_ref):
         return
     current_digest = current_fingerprint.get("sha256")
     summaries = (
@@ -366,24 +393,29 @@ def check_smoke_summary_freshness(findings: list[Finding]) -> None:
             findings.append(Finding(rel_path, 1, message))
 
 
-def smoke_summary_freshness_required(source: dict[str, object]) -> bool:
-    """Require fresh smoke proof only for dirty accessibility-relevant files.
+def smoke_summary_freshness_required(
+    source: dict[str, object],
+    base_ref: str | None = None,
+) -> bool:
+    """Require fresh smoke proof for dirty files, or committed branch diffs with `--base-ref`.
 
     `dirty` is fail-safe: `accessibility_source_fingerprint` reports dirty when
     git could not answer, so a broken or absent git cannot read as a clean tree
     and waive the proof.
 
-    **Known remaining hole, recorded rather than silently accepted.** A tree whose
-    accessibility-relevant files are *committed* reads as clean, so this returns
-    False and no smoke proof is demanded — even if the lanes have never run for
-    that content. The gate therefore proves "no unproven *working-tree* change",
-    not "this content has been proven". Closing it means comparing the last
-    summary's digest against the committed relevant tree and keeping a proof
-    record across commits, which is a design change rather than a guard; until
-    then CI's own smoke lanes are what cover committed content.
-    `run_self_test` pins this behaviour so a future edit changes it deliberately.
+    When `base_ref` is None (pre-commit working-tree check), only dirty
+    accessibility-relevant files require fresh proof. Passing `base_ref` (used
+    by `.githooks/pre-push` and `make check-smoke-proof`) closes hole S7(b) by
+    also requiring fresh smoke proof whenever `base_ref...HEAD` modified
+    accessibility-relevant files, failing closed if the branch diff cannot be read.
     """
 
+    if base_ref is not None:
+        return (
+            bool(source.get("dirty"))
+            or bool(source.get("branch_relevant_changes"))
+            or not bool(source.get("branch_status_available", False))
+        )
     return bool(source.get("dirty"))
 
 
@@ -799,6 +831,51 @@ def run_self_test() -> None:
         raise AssertionError(
             "source fingerprint digest must cover only content entries, not git state"
         )
+
+    # Decision 7 (2026-11-18): widget tests remain under static policy checks,
+    # while leaving the accessibility/visual smoke fingerprint set.
+    assert is_policy_path("crates/lushtext/tests/widget/window.rs"), (
+        "widget tests must remain under static accessibility policy checks"
+    )
+    assert not is_relevant("crates/lushtext/tests/widget/window.rs"), (
+        "widget tests must be excluded from smoke source fingerprints (Decision 7)"
+    )
+    saved_git_env = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("GIT_")}
+    os.environ["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Path(tmp)
+            for cmd in (["init", "-q"], ["config", "user.name", "t"], ["config", "user.email", "t@example.invalid"], ["config", "commit.gpgsign", "false"]):
+                subprocess.run(["git", "-C", str(r), *cmd], check=True)
+            (r / "crates/lushtext-ui/src/ui").mkdir(parents=True)
+            (r / "crates/lushtext-ui/src/ui/x.rs").write_text("pub fn f() {}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(r), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(r), "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "base"], check=True)
+            (r / "docs").mkdir(exist_ok=True)
+            subprocess.run(["git", "-C", str(r), "mv", "crates/lushtext-ui/src/ui/x.rs", "docs/x.rs"], check=True)
+            moved_rows, ok_status = relevant_status(r)
+            assert ok_status and moved_rows, "renaming a relevant file out of ui/ must still report relevant_status"
+    finally:
+        for k in list(os.environ):
+            if k.startswith("GIT_"):
+                os.environ.pop(k, None)
+        os.environ.update(saved_git_env)
+
+    # S7(b) closure under --base-ref: clean worktrees with committed relevant
+    # branch changes (or unreadable branch diff) require smoke proof.
+    assert smoke_summary_freshness_required(
+        {"dirty": False, "branch_relevant_changes": ["crates/lushtext-ui/src/ui/window/mod.rs"], "branch_status_available": True},
+        base_ref="origin/main",
+    ), "committed branch relevant changes under --base-ref must require smoke proof"
+    assert smoke_summary_freshness_required(
+        {"dirty": False, "branch_relevant_changes": [], "branch_status_available": False},
+        base_ref="origin/main",
+    ), "unanswerable branch diff under --base-ref must fail closed"
+    assert not smoke_summary_freshness_required(
+        {"dirty": False, "branch_relevant_changes": [], "branch_status_available": True},
+        base_ref="origin/main",
+    ), "clean branch with no relevant diff must not require smoke proof"
     print("PASS: accessibility policy self-test")
 
 

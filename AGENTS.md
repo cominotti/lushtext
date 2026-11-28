@@ -239,8 +239,13 @@ archived OpenSpec changes.
 make build-debug / make build   # debug / release build
 make run         # debug build + a fresh launch with temporary GNOME desktop staging
 make fmt         # rustfmt everywhere, including widget tests cargo fmt cannot reach
-make check       # fmt + all-feature Clippy + fast policy audits (= make pre-commit)
-make check-policy # the fast policy audits alone
+make check       # fmt + all-feature Clippy + fast static policy audits (= make pre-commit; writes clean-tree stamp)
+make check-policy # the fast static policy audits alone
+make check-smoke-proof # branch-level live smoke freshness over origin/main...HEAD (enforced by pre-push & verify-local)
+make smoke-ui    # single pre-build + parallel execution (SMOKE_PARALLEL=1) of accessibility, visual & visual-geometry smokes
+make verify-local-fast # check + default-feature bin check + strict rustdoc gate + bench --no-run
+make verify-local # full local CI parity (verify-local-fast, cargo deny, test, test-prop, fuzz-corpus-replay, gtk-lush checks, check-smoke-proof)
+make check-python-hygiene # dependency-free AST + regex hygiene gate for repo Python scripts (in check-policy)
 make check-session-hygiene # every private headless session starts through scripts/headless-session (in check-policy)
 make check-workflow-scripts # the versioned .claude/workflows scripts: syntax, phases, no personal data or copied rule text, and each script's stub-agent harness (in check-policy)
 make check-agent-docs # agent rules, skills, and the filesystem-boundary guidance
@@ -282,14 +287,17 @@ The blocking Rust lint gate is curated and all-featured:
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`. Local
 `make check`, `.githooks/pre-commit`, and CI must stay aligned with that
 command (the hook skips only the Clippy step for a docs-only commit, decided
-fail-closed by `scripts/precommit-scope.py`, and `make check-precommit-scope`
-fails if a Rust build input is on its allowlist), and `make check` also runs the fast policy audits (`make check-policy`:
-filesystem boundary, hexagonal crate boundaries, domain value types, typed error contracts, idiomatic state & C-ism gates (`make check-idiomatic-state`), Two-Zone Arc safety (`make check-arc-safety`), Blueprint drift and template contract, and the rest).
+fail-closed by `scripts/precommit-scope.py`, or reuses a 30-minute
+clean-worktree `git write-tree` stamp when `make check` already passed on that
+exact tree; `make check-precommit-scope` fails if a Rust build input is on its
+allowlist), and `make check` also runs the fast static policy audits (`make check-policy`:
+filesystem boundary, hexagonal crate boundaries, domain value types, typed error contracts, idiomatic state & C-ism gates (`make check-idiomatic-state`), Two-Zone Arc safety (`make check-arc-safety`), Python hygiene (`make check-python-hygiene`), Blueprint drift and template contract, and the rest).
 Broad Clippy groups (`restriction`, `pedantic`, `nursery`, `cargo`) are
 advisory discovery inputs, not blocking policy; run `make lint-advisory` after a
 toolchain or dependency update. Dependency policy is
 `cargo deny check advisories bans sources licenses`. The rustdoc lint gate runs
-in CI's `Lint` job and by hand (`.agents/rules/testing.md`), and OpenSpec
+in CI's `Lint` job and locally via `make verify-local-fast` / `make verify-local`
+(`.agents/rules/testing.md`), and OpenSpec
 changes pass `openspec validate --all --strict`. Use narrow
 `#[expect(..., reason = "...")]` exceptions only after reviewing the local GTK,
 generated-code, test, or benchmark invariant (`.agents/rules/rust.md`, "Lint

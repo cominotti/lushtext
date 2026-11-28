@@ -179,53 +179,78 @@ a helper a test must remember to call first
 
 ## Proof Obligations of a Change
 
-- **Rustdoc lint gate, run by hand.** It is not in `make check`,
-  `make pre-commit` or `make check-policy`, but CI's `Lint` job enforces it:
+- **Rustdoc lint gate and local CI parity (`make verify-local-fast`,
+  `make verify-local`).** CI's `Lint` job enforces:
 
   ```
   RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" \
     cargo doc --workspace --no-deps
   ```
 
-  Run it whenever a change adds or edits doc comments on a public module, and
-  always for a new workflow facade or role home: public module documentation
-  must not intra-doc-link private items. The fix is **always** to drop the link
-  and keep the name in backticks; never widen an item's visibility to satisfy
-  documentation.
+  `make check` / `make pre-commit` keep fast static iteration (fmt, Clippy,
+  `check-policy`); `make verify-local-fast` adds `cargo check -p lushtext
+  --bins --locked`, the `rustdoc` gate above, and `cargo bench --no-run`;
+  `make verify-local` runs full local CI parity (`verify-local-fast`,
+  `cargo deny`, `make test`, `make test-prop`, `make fuzz-corpus-replay`,
+  conditional GTK Lush checks when `crates/gtk-lush*` changed, and
+  `make check-smoke-proof`). Run `make verify-local-fast` before opening or
+  updating a PR, and `make verify-local` before merging. Public module docs
+  must never intra-doc-link private items — drop the link and keep the name in
+  backticks; never widen visibility for docs.
 - **`git add -N` new files before any diff-aware gate.**
-  `make check-visual-proof-policy`, the diff-aware half of
-  `make check-accessibility-policy`, and `make mutants-diff` build their
-  changed-file set from `git diff <base>`, which omits untracked paths. A green
-  diff-aware gate on a worktree with untracked new source files is not
-  evidence. When adding the files changes a gate's digest and it starts
-  failing, re-run the lane; never unstage the files to take the earlier green.
+  `make check-smoke-proof` (`scripts/check-visual-proof-policy.py`,
+  `scripts/check-accessibility-policy.py`) and `make mutants-diff` build their
+  changed-file set from `git diff` + `git status`, which omits untracked paths.
+  A green diff-aware gate on a worktree with untracked new source files is not
+  evidence. When adding files changes a digest, re-run the affected smoke lane;
+  never unstage files to keep an earlier green.
+- **Branch-level smoke freshness (`make check-smoke-proof`) and S7(b) closure.**
+  Live smoke freshness is enforced at branch scope over `origin/main...HEAD` (or
+  `SMOKE_PROOF_BASE_REF`) unioned with working-tree status by
+  `make check-smoke-proof` — called automatically by `.githooks/pre-push` and
+  `make verify-local` — rather than inside `.githooks/pre-commit`. This closes
+  recorded hole S7(b) (committed UI diffs can no longer bypass smoke freshness on
+  a clean branch) while letting intermediate and `/swarm` commits iterate without
+  Mutter churn. Because `changed_files_digest` unions `base_ref...HEAD` with
+  working-tree status, a passing `make smoke-ui` summary survives `git add` and
+  `git commit` as long as file bytes remain unchanged.
 - **Visual proof.** Screenshot-reported or geometry-sensitive UI fixes run
-  `make visual-geometry-smoke` when the invariant is same-session pixel
-  stability across a layout action; a pixel-visible effect with a named
-  invariant must appear in the root summary's `pixel_verified_invariant_ids`.
-  `make check-visual-proof-policy` (in `make check-policy`) fails visual-sensitive
-  worktree changes until a passing, unfiltered summary under
-  `build/smoke/visual-geometry` matches the current diff; skipped, filtered,
-  name-only, rectangle-only, or stale runs do not count. Runners start from a
-  clean artifact root. A bug first seen in a live window is captured with
-  `scripts/lushtext-automation.py visual-geometry-capture ...` and replayed
-  headless.
-- **Accessibility proof.** `make check-accessibility-policy` (in
-  `make check-policy`) requires, while accessibility-relevant files are dirty,
-  accessibility and visual smoke summaries whose source fingerprint matches
-  the current relevant-file contents.
-- **Files under the UI prefixes need the three smokes.** The visual-sensitive
-  and accessibility-relevant sets are selected by **prefix**
-  (`crates/lushtext-ui/src/ui/`, `crates/lushtext/tests/widget/`,
-  `resources/ui/`, `resources/style/`), so any file there, documentation
-  included, makes a commit need `make visual-geometry-smoke`,
-  `make accessibility-smoke` and `make visual-smoke` current. The proofs digest
-  file contents in `git status`, not a commit range: plan a series so those
-  files change in as few commits as possible.
+  `make visual-geometry-smoke` (or `make smoke-ui`) when the invariant is
+  same-session pixel stability across a layout action; a pixel-visible effect
+  with a named invariant must appear in the root summary's
+  `pixel_verified_invariant_ids`. `make check-smoke-proof` fails branches with
+  visual-sensitive changes until a passing, unfiltered
+  `build/smoke/visual-geometry/summary.json` matches the branch diff; skipped,
+  filtered, name-only, rectangle-only, or stale runs do not count. Runners
+  start from a clean artifact root. A bug first seen in a live window is
+  captured with `scripts/lushtext-automation.py visual-geometry-capture ...` and
+  replayed headless.
+- **Accessibility proof.** `make check-smoke-proof` runs
+  `check-accessibility-policy.py --strict-current-tree --base-ref ...` and
+  requires accessibility and visual smoke summaries whose source fingerprint
+  matches the current relevant-file contents when any smoke-relevant path
+  changed on the branch or worktree. Meanwhile `make check-policy` runs
+  `make check-accessibility-policy` (which invokes `--static-only`) and
+  `make check-visual-proof-policy` (`--self-test` parity checks only).
+- **Files under the UI prefixes need the three smokes (Decision 7 note).**
+  The visual-sensitive and accessibility-relevant smoke sets are selected by
+  prefix (`crates/lushtext-ui/src/ui/`, `resources/ui/`, `resources/style/`),
+  plus `scripts/lushtext-automation.py` and automation/smoke files in
+  `accessibility_source_fingerprint.py`. Per 2026-11-18 Decision 7,
+  `crates/lushtext/tests/widget/` is excluded from both smoke fingerprints
+  while retained in `is_policy_path` (static accessibility policy audits +
+  `make test-widget-headless`); residual risk is bounded because widget tests do
+  not compile into the shipped `lushtext` binary (`cargo check -p lushtext
+  --bins --locked`) and test behavior is verified by `make test-widget-headless`.
+  Any edit under `crates/lushtext-ui/src/ui/`, `resources/ui/`, or
+  `resources/style/` (docs included) requires `make smoke-ui` (which pre-builds
+  once and runs `visual-geometry-smoke`, `accessibility-smoke`, and
+  `visual-smoke` in parallel when `SMOKE_PARALLEL=1`).
 - Filesystem-sensitive changes pass `make check-agent-docs`;
   automation-surface changes pass `make check-automation-docs`, and a change to
-  `scripts/lushtext-automation.py` also `make automation-client-self-test`
-  (both in `make check-policy`).
+  `scripts/lushtext-automation.py` also `make automation-client-self-test`;
+  Python script changes pass `make check-python-hygiene` (all in
+  `make check-policy`).
 - **Path-keyed gates.** A gate is path-keyed when a configuration file or policy
   implementation selects what it protects by naming files literally (exact
   path, an explicit scope entry, a `line:column` anchor) rather than by a
@@ -251,17 +276,17 @@ a helper a test must remember to call first
 
 ## Gate Order Before a Commit
 
-Run the cheap gates first, with the same `make` targets the hook runs:
-`make fmt`, `make check-fmt`, `make check-clippy` (it adds project lints a plain
-`cargo clippy` lacks), `make check-workflow-boundaries`,
-`make check-session-hygiene` when a lane, a workflow or the session helper
-changed, `make check-automation-docs` when the automation surface changed, and
-`cargo check -p lushtext --bins --locked` with default features (all-feature
-Clippy hides `test-utils`-only imports). Only then run the accessibility,
-visual and visual-geometry smokes, and commit right after them: their proofs
-fingerprint file contents, so any edit after a smoke, `make fmt` included,
-makes them stale and the hook refuses the commit. Commit through
-`scripts/heavy.sh` (see verification-runs.md, "Shared-machine agent work").
+Run the cheap static gates while iterating:
+`make fmt`, `make check` (`make check-fmt` + all-feature `make check-clippy` +
+`make check-policy`, which writes a 30-minute clean-worktree `git write-tree`
+stamp so an unchanged `git commit -S` can reuse it without re-running Clippy),
+and `make verify-local-fast` (`cargo check -p lushtext --bins --locked`,
+strict `rustdoc`, `cargo bench --no-run`). Complete `/swarm` code review and
+review fixes (plus any standalone In-PR archive) **before** running
+`make smoke-ui GATE_TREES_CHANGE=<change>` once and `make verify-local`
+(including `make check-smoke-proof`) on the exact final `HEAD^{tree}`, then push
+(enforced by `.githooks/pre-push`) and merge. Commit through `scripts/heavy.sh`
+(see verification-runs.md, "Shared-machine agent work").
 
 ## Kani Harnesses
 

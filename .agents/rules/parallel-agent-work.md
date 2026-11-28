@@ -194,37 +194,50 @@ Change worktrees live in `.claude/worktrees/<change>`.
 
 ## Merging
 
-- **Merge on local evidence (programme changes only).** The maintainer
-  authorized this on 2026-11-14 for changes the coordinator runs from the
-  ledger, when the stage brief says to merge. It covers no other pull
-  request.
+- **Merge on local evidence.** The maintainer authorized this on 2026-11-14 for
+  programme changes and extended it to authorized `/goal` and standalone agent
+  workflows when every required local gate (including `make verify-local` and
+  `make check-smoke-proof` for UI-relevant branches) is recorded on the exact
+  final `HEAD^{tree}` via `scripts/gate-trees.sh record`.
 - A failure already seen locally, or known on `main`, still blocks the merge,
-  or gets its own change in the ledger. Only CI results nobody has read wait
-  for the end of the programme. CI is checked once then, and every red job is
-  fixed in that work stream (`preexisting-blockers.md`).
+  or gets its own change in the ledger. For CI, only results nobody has read
+  wait until after the merge as an asynchronous audit (or end-of-programme
+  sweep); every red CI or Sonar finding found then is fixed in its own follow-up
+  work stream (`preexisting-blockers.md`).
 - Exception: a change whose **correctness** evidence exists only in CI, such
-  as a `.github/workflows` change, may dispatch and read its own runs. It
-  waits with `timeout 540 gh run watch <id> --exit-status` in repeated
-  foreground calls, one run at a time by its id (`gh pr checks --watch` has
-  returned while runs were still pending), and merges only when those runs
-  pass. It waits before
-  step 1, never while holding `MERGE-LOCK`. If the `origin/main` merge in
-  step 2 changes files that evidence covers, it releases the lock, pushes,
-  and waits for the new runs first.
+  as a `.github/workflows` change, watches its PR CI runs with
+  `timeout 540 gh run watch <id> --exit-status` in repeated foreground calls, one
+  run at a time by its id (`gh pr checks --watch` has returned while runs were
+  still pending), and merges only when those runs pass. It waits before step 1,
+  never while holding `MERGE-LOCK`. If the `origin/main` merge in step 2 changes
+  files that evidence covers, it releases the lock, pushes, and waits for the
+  new runs first.
 - **Kani shard budgets are archive evidence, not merge evidence**
-  (`verification-runs.md`, "Kani", "Shard budgets"). Stage 3 dispatches the
-  runs and never watches them; stage 4 reads the finished ones with
-  `gh run view`. A finished red run or a figure over a margin blocks the
-  merge. A run still in progress does not: the change merges on local
-  evidence, releases `MERGE-LOCK`, appends `ARCHIVE OWED <change>: kani
-  <run ids>` to the ledger, waits for the runs in the foreground outside
-  every lock, and takes `MERGE-LOCK` again for the archive commit alone.
-  - The figures are written only in the archive commit, never on the branch
-    (a branch edit changes the tree and voids the gate records of step 2).
-    That commit's diff of `scripts/kani-shards.py` touches only the pending
-    records' `measured_in` and figure fields; check it before committing.
-  - A red result found then keeps the change active, and the fix goes
-    through a new pull request of the same change before the archive.
+  (`verification-runs.md`, "Kani", "Shard budgets"). Stage 3 of
+  `programme-change.js` dispatches the runs and never watches them; stage 4
+  reads finished ones with `gh run view`. A finished red run or a figure over a
+  margin blocks the merge. A run still in progress does not: the change merges on
+  local evidence, releases `MERGE-LOCK`, appends `ARCHIVE OWED <change>: kani
+  <run ids>` to the ledger, waits for the runs in the foreground outside every
+  lock, and takes `MERGE-LOCK` again for the archive commit alone.
+  - When Kani figures are still pending, the figures are written only in the
+    post-merge archive commit, never on the branch (a branch edit changes the
+    tree and voids the gate records of step 2). That commit's diff of
+    `scripts/kani-shards.py` touches only the pending records' `measured_in`
+    and figure fields; check it before committing.
+  - A red result found then keeps the change active, and the fix goes through a
+    new pull request of the same change before the archive.
+- **Archive-Before-Final-Gate (when no Kani CI figures are pending):** For
+  `/goal` and standalone agent workflows that do not owe pending Kani shard
+  figures (or changes whose `tasks.md` states `Kani: none`), sync delta specs
+  and archive the OpenSpec change (`openspec-archive-change`) directly on the PR
+  branch as a docs-only commit *after* final code review fixes and *before* the
+  single final `make verify-local VERIFY_RUN_SMOKES=1 GATE_TREES_CHANGE=<change>`
+  gate pass recorded on that exact post-archive `HEAD^{tree}` (or omit
+  `VERIFY_RUN_SMOKES=1` when no smoke-relevant paths changed). That eliminates a separate post-merge
+  archive PR and its CI cycle while preserving the exact-tree gate invariant
+  (skip step 4 below when the archive is already in the PR branch).
+  (`programme-change.js` always keeps its stage-4 post-merge archive path.)
 - **Merges are serialized under `$H/MERGE-LOCK`.**
   1. Take it:
      `timeout 540 bash -c 'until mkdir "$0/MERGE-LOCK" 2>/dev/null; do sleep 30; done' "${H:?}"`,
@@ -239,29 +252,26 @@ Change worktrees live in `.claude/worktrees/<change>`.
        `scripts/gate-trees.sh lookup <wt> --gate '<gate>'` finds on this
        exact `HEAD^{tree}`, and run the gate when it finds none (a full
        `make test` record covers any subset of tests: pass
-       `--gate 'make test'` as well). The smokes are not looked up here.
-       The pre-commit hook (`make check-policy`) refuses a commit that
-       carries a smoke-relevant file unless the accessibility and visual
-       summaries match the fingerprint of the whole smoke-relevant set
-       (`check-accessibility-policy --strict-current-tree`), and one that
-       carries a visual-sensitive file unless a visual-geometry summary
-       matches the commit's diff (`check-visual-proof-policy`); a file
-       under the UI prefixes is both. `git merge` runs no pre-commit hook.
-       So when a merge in the branch brought smoke-relevant files in and no
-       later commit of the branch's own line (first parent, not on
-       `origin/main`) carried a file under the UI prefixes, the apply stage
-       records the three smokes on its tree, and the script requires those
-       records before the merge stage ("Stages after implementation" 3).
+       `--gate 'make test'` as well). Because `.githooks/pre-commit` runs static
+       checks only and live smoke freshness is enforced at branch scope by
+       `.githooks/pre-push` and `make check-smoke-proof` over `origin/main...HEAD`,
+       every UI-relevant branch owes canonical `gate-trees.sh` records for
+       `make accessibility-smoke`, `make visual-smoke`, and
+       `make visual-geometry-smoke` on `HEAD^{tree}`, checked before the merge
+       stage ("Stages after implementation" 3).
      - **A merge that made a commit reruns every gate on the post-merge
        tree** (maintainer, 2026-11-19), through `heavy.sh`: `make check`,
-       the full `make test`, and the three smokes when the branch or the
-       merged-in commits touch a smoke-relevant file, one under the UI
-       prefixes (`testing.md`, "Proof Obligations of a Change") or on the
-       exact list of `scripts/accessibility_source_fingerprint.py`, as its
-       `is_relevant` decides. A docs-only merge commit is no exception.
+       the full `make test` (plus `make verify-local-fast` when running
+       `make verify-local`), and `make smoke-ui GATE_TREES_CHANGE=<change>` (or
+       the three individual smoke records) when the branch or the merged-in
+       commits touch a smoke-relevant file, one under the UI prefixes
+       (`testing.md`, "Proof Obligations of a Change") or on the exact list of
+       `scripts/accessibility_source_fingerprint.py`, as its `is_relevant`
+       decides. A docs-only merge commit is no exception.
      - Record each gate you run with
        `scripts/gate-trees.sh record <wt> --gate '<gate>' -- scripts/heavy.sh … -- make <gate>`.
-       Only that helper writes `gate-trees.log`, and it never deletes a line.
+       Only that helper writes `gate-trees.log` (under `flock` so `make smoke-ui`
+       parallel lanes never interleave), and it never deletes a line.
        It records nothing for a dirty or changing worktree, or for a gate
        that never ran (exit 75, 78, 126 or 127). It records a failing run as
        a fail, and a run that timed out (124) or was killed by a signal as
@@ -281,16 +291,17 @@ Change worktrees live in `.claude/worktrees/<change>`.
        subcommand existed reads a void or interrupted line as a fail until
        it merges `main`, which the prepare stage does.
      - `git push origin HEAD`, to the branch of the same name (never
-       `HEAD:main`).
+       `HEAD:main`; `.githooks/pre-push` verifies `make check-smoke-proof`).
   3. `git fetch --prune origin`, then `git merge-base --is-ancestor origin/main HEAD`.
      If it fails, `main` moved since step 2: repeat step 2. If it holds,
      GitHub's merge commit gets the tree the gates ran on. Then merge with
      `gh pr merge <n> --merge --admin --match-head-commit "$(git rev-parse HEAD)"`.
      `--admin` skips required checks and reviews.
-  4. Archive the change in a fresh worktree on `origin/main` after
-     `git fetch`, commit it through `heavy.sh`, and push that one commit with
-     `git push origin HEAD:main`, under the same authorization.
-     An archive that still owes Kani figures follows in a second
+  4. When the archive was not already committed on the PR branch
+     (Archive-Before-Final-Gate above), archive the change in a fresh worktree
+     on `origin/main` after `git fetch`, commit it through `heavy.sh`, and push
+     that one commit with `git push origin HEAD:main`, under the same
+     authorization. An archive that still owes Kani figures follows in a second
      `MERGE-LOCK` hold, as above; the archive commit's hook then runs the full
      `make check`, because `scripts/kani-shards.py` is not docs-only.
   5. Once the archive is on `origin/main`, release the lock only if it is
@@ -300,19 +311,26 @@ Change worktrees live in `.claude/worktrees/<change>`.
   `MERGE-LOCK` without archiving, then stop and report. Any other early exit
   also releases it. Never retry another way: no other flag, account or API
   call, no ruleset edit, and never push the change's own commits to `main`.
-  The archive commit in step 4 is the only direct push.
+  The post-merge archive commit in step 4 is the only direct push.
 - Only the coordinator breaks a lock: one whose owner's PR is merged or
   closed, or whose run the ledger shows as ended. It records the break in
   that change's handoff.
 
 ## Durability
 
-- Push per task group (`verification-runs.md`, "Checkpoints").
-- Run the non-visual gates first, and the visual and smoke lanes once, on the
-  final tree.
-- A commit that touches the UI prefixes still needs the three smokes current
-  (`testing.md`), so put those files in as few task-group commits as
-  possible, ideally the last.
+- Push per task group or stable phase (`verification-runs.md`, "Checkpoints");
+  note that `.githooks/pre-push` enforces `make check-smoke-proof` once the
+  branch touches UI smoke-relevant paths against `origin/main`.
+- **Review-Before-Smoke:** batch UI edits locally without intermediate
+  smokes; `.githooks/pre-commit` enforces static checks only (`make pre-commit`
+  or the 30-minute clean-worktree `git write-tree` stamp), never Mutter smokes.
+  Run `/swarm` 3-lens code review + `data-safety`/perf reviews and apply all
+  confirmed fixes **before** running the single final `make smoke-ui` +
+  `make verify-local` pass on the final committed (and, when standalone,
+  in-PR-archived) `HEAD^{tree}`.
+- Run non-visual gates first during iteration (`make verify-local-fast`), and
+  run `make smoke-ui GATE_TREES_CHANGE=<change>` plus `make verify-local` once
+  at the end before pushing/merging.
 - After an `origin/main` merge under `MERGE-LOCK` that made a commit, the
   three smokes rerun when the branch or the merged-in commits touch a
   smoke-relevant file ("Merging" step 2); a merge that made no commit reruns
@@ -551,23 +569,20 @@ script, and inside a workflow both skills below run their single-pass forms.
    selector and stops when its flags differ from the ones the lenses ran
    under. It dedupes the findings, checks each against the code, applies the
    confirmed ones in the worktree and records the rejected ones with reasons,
-   marking those a lens raised as correctness bugs. It runs the three smokes
-   once when its commit carries a smoke-relevant file, commits `/simplify`'s
+   marking those a lens raised as correctness bugs. It commits `/simplify`'s
    edits and its own together locally **before** any long gate, runs the full
-   gates once on the result (`make check` and the full `make test` among
-   them), each through `scripts/gate-trees.sh record`, records the three
-   smokes on the committed tree when a merge in the branch brought
-   smoke-relevant files in and no later commit of the branch's own line
-   carried a file under the UI prefixes (no hook saw that content with all
-   three smokes), re-dispatches a Kani
-   budget run its edits make stale (`verification-runs.md`, "Kani"), and
-   pushes at the end. It is the last agent that edits code. A read-only
-   agent then checks, in the shell, that the worktree is clean, that `HEAD`
-   and `HEAD^{tree}` are the ones the apply agent returned and are pushed,
-   that `scripts/gate-trees.sh lookup` finds a `make check` pass and, in a
-   lookup of its own, a `make test` pass for that tree, and the three smoke
-   passes when that merge case holds or its check fails; the script stops on
-   any difference, before the merge stage.
+   gates once on the result (`make check`, the full `make test`, and
+   `make smoke-ui GATE_TREES_CHANGE=<change>` or individual smokes when the
+   branch touches `is_relevant` files against `origin/main`), each through
+   `scripts/gate-trees.sh record`, re-dispatches a Kani budget run its edits
+   make stale (`verification-runs.md`, "Kani"), and pushes at the end. It is the
+   last agent that edits code. A read-only agent then checks, in the shell,
+   that the worktree is clean, that `HEAD` and `HEAD^{tree}` are the ones the
+   apply agent returned and are pushed, that `scripts/gate-trees.sh lookup`
+   finds a `make check` pass and, in a lookup of its own, a `make test` pass
+   for that tree, and the three smoke passes whenever `origin/main...HEAD`
+   touches `is_relevant` files; the script stops on any difference, before the
+   merge stage.
 4. **The final review, merge and archive agent edits nothing.** It reviews
    exactly the apply range the script passes (the lens `HEAD` to the apply
    `HEAD`, merge commits included), checks that `HEAD^{tree}` is the gated
