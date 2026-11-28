@@ -159,6 +159,8 @@ def run_git(args: list[str], repo_root: Path = REPO_ROOT) -> list[str]:
 
 
 def status_changed_files(repo_root: Path = REPO_ROOT) -> list[str]:
+    if not (repo_root / ".git").exists():
+        return []
     lines, error = run_git_checked(
         ["status", "--porcelain=v1", "--untracked-files=all"], repo_root
     )
@@ -765,6 +767,15 @@ def run_self_tests() -> None:
             assert "resources/ui/a.blp" in moved_dirty, (
                 f"renaming a visual file out of ui/ must still trigger visual proof: {moved_dirty}"
             )
+            non_git = Path(git_tmp) / "tarball"
+            non_git.mkdir()
+            assert _changed_files_for_root(None, non_git) == []
+            try:
+                _changed_files_for_root("origin/main", non_git)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("explicit --base-ref on gitless directory must fail closed")
     finally:
         for k in list(os.environ):
             if k.startswith("GIT_"):

@@ -1133,6 +1133,9 @@ fn base_ref_changed_files(base_ref: &str, root: &Path) -> Result<Vec<String>, St
 }
 
 fn status_changed_files(root: &Path) -> Result<Vec<String>, String> {
+    if !root.join(".git").exists() {
+        return Ok(Vec::new());
+    }
     let mut files = Vec::new();
     for line in run_git_checked(&["status", "--porcelain=v1", "--untracked-files=all"], root)? {
         let Some(path) = line.get(3..) else {
@@ -1477,6 +1480,17 @@ mod tests {
         assert!(
             moved_dirty.contains(&"resources/ui/a.blp".to_string()),
             "renaming a visual file out of ui/ must still trigger visual proof: {moved_dirty:?}"
+        );
+    }
+
+    #[test]
+    fn gitless_tarball_allows_none_base_ref_and_fails_closed_with_base_ref() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let no_base = changed_files(None, dir.path()).expect("gitless None base_ref must succeed");
+        assert!(no_base.is_empty());
+        assert!(
+            changed_files(Some("origin/main"), dir.path()).is_err(),
+            "explicit --base-ref on gitless directory must fail closed"
         );
     }
 }
