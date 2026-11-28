@@ -823,6 +823,61 @@ fn test_a_long_line_note_installs_folded_in_bounded_turns_and_copies_from_its_te
 }
 
 #[test]
+fn test_folded_note_disposes_body_off_gtk_thread() {
+    let dir = tempfile::tempdir().expect("folded note disposal tempdir");
+    let path = dir.path().join("doc.txt");
+    fixture::write_text(&path, "plain\n");
+    let giant = "w".repeat(n(L_PROTECT_EDIT) + 10_000);
+    let raw = format!("{}{giant}\n", "ordinary note line\n".repeat(4_000));
+    let note = lushtext_model::persistence::note::RichNoteBody::new(&raw);
+    lushtext_services::notes::document_note_service::save_for_path(
+        &lushtext_services::persistence::json_store::data_dir(),
+        &path,
+        &note,
+    )
+    .expect("seed folded note");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(10), || {
+        active_editor(&window).file_path().as_deref() == Some(path.as_path())
+    });
+
+    let retired_before = window.notes_evidence().note_bodies_retired_off_gtk;
+    activate_action(&window, "open-document-note");
+    wait_until(Duration::from_secs(10), || {
+        window.visible_dialog().is_some()
+    });
+    let dialog = window
+        .visible_dialog()
+        .and_downcast::<libadwaita::AlertDialog>()
+        .expect("note dialog");
+    let extra = dialog.extra_child().expect("note editor");
+    let chars = note.text.chars().count();
+    let mut found_view = None;
+    wait_until(Duration::from_secs(120), || {
+        found_view = text_views_under(&extra)
+            .into_iter()
+            .find(|view| usize::try_from(view.buffer().char_count()).ok() == Some(chars));
+        found_view.is_some()
+    });
+    assert!(buffer_is_folded(
+        &found_view.expect("installed note body").buffer()
+    ));
+
+    dialog.close();
+    drop(extra);
+    drop(dialog);
+    wait_until(Duration::from_secs(5), || window.visible_dialog().is_none());
+    flush_events();
+
+    wait_until(Duration::from_secs(5), || {
+        window.notes_evidence().note_bodies_retired_off_gtk > retired_before
+    });
+}
+
+#[test]
 fn test_copy_whole_line_says_which_line_it_copied() {
     let chars = n(L_PROTECT_EDIT) + 7;
     let (body, _) = giant_body(chars);

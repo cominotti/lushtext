@@ -33,6 +33,7 @@ use gtk4::prelude::*;
 
 use crate::ui::buffer_snapshot;
 use crate::ui::folded_text::{FoldedTextSurface, InstallSlice, SurfaceText, install_slice};
+use crate::ui::plain_disposal::{self, DisposalOwned};
 use crate::ui::protected_fold::{BoundaryLedger, FoldedInstall};
 use lushtext_model::document::document_scale::L_PROTECT_EDIT;
 use lushtext_model::document::paragraph_boundary::DocumentProfile;
@@ -42,15 +43,20 @@ use lushtext_model::document::protected_fold::FoldPlan;
 pub(super) static NOTE_BODY_INSTALL_SLICES: AtomicU64 = AtomicU64::new(0);
 /// The longest note-body install turn, in microseconds, process-wide.
 pub(super) static NOTE_BODY_LARGEST_SLICE_US: AtomicU64 = AtomicU64::new(0);
+/// Large/folded note bodies retired off the GTK main thread via
+/// `DisposalOwned` (evidence).
+pub(super) static NOTE_BODY_RETIRED_OFF_GTK: AtomicU64 = AtomicU64::new(0);
 
 /// Accessible and visible copy of a folded note.
 const FOLDED_NOTE_NOTICE: &str =
     "This note has very long lines, so it opens read-only with long lines shortened.";
 const LOADING_NOTE_NOTICE: &str = "Loading note…";
+const BUSY_NOTE_NOTICE: &str =
+    "Could not open a large note right now because background cleanup is busy.";
 
 /// Work waiting for the body to be installed; it receives the installed text
 /// when the install was deferred (`None` for a body installed at once).
-type InstalledCallback = Box<dyn FnOnce(&Rc<NoteBody>, Option<&Arc<String>>)>;
+type InstalledCallback = Box<dyn FnOnce(&Rc<NoteBody>, Option<&Arc<DisposalOwned<String>>>)>;
 
 /// One note editor's body: its view, its install, and where its text is read.
 pub(super) struct NoteBody {
@@ -59,7 +65,7 @@ pub(super) struct NoteBody {
     copy: Rc<FoldedTextSurface>,
     /// The text of a folded note, which is read-only: the source its copies,
     /// renders and saves read.
-    folded: RefCell<Option<Arc<String>>>,
+    folded: RefCell<Option<Arc<DisposalOwned<String>>>>,
     /// `Some` while a deferred install runs: the work waiting for it.
     waiting: RefCell<Option<Vec<InstalledCallback>>>,
     installing: Cell<bool>,
@@ -86,6 +92,14 @@ impl NoteBody {
             notice.set_visible(false);
             return body;
         }
+        let weight = u64::try_from(text.len()).unwrap_or(u64::MAX).max(1);
+        let Some(reservation) = plain_disposal::try_reserve_progress_for_gtk(weight) else {
+            view.set_editable(false);
+            view.set_cursor_visible(false);
+            notice.set_label(BUSY_NOTE_NOTICE);
+            notice.set_visible(true);
+            return body;
+        };
         body.installing.set(true);
         body.waiting.replace(Some(Vec::new()));
         view.set_editable(false);
@@ -93,8 +107,18 @@ impl NoteBody {
         notice.set_label(LOADING_NOTE_NOTICE);
         notice.set_visible(true);
         // One copy of the body leaves the GTK thread here (a memcpy); the
-        // profile, and so the fold plan, is computed on the worker.
-        let owned = Arc::new(text.to_owned());
+        // profile, and so the fold plan, is computed on the worker. Retiring
+        // a large or folded note body drops through `DisposalOwned` off GTK.
+        let gtk_thread = std::thread::current().id();
+        let owned = reservation
+            .own(text.to_owned())
+            .into_retained_current()
+            .with_disposal_terminal(move || {
+                if std::thread::current().id() != gtk_thread {
+                    NOTE_BODY_RETIRED_OFF_GTK.fetch_add(1, Ordering::Release);
+                }
+            });
+        let owned = Arc::new(owned);
         let weak = Rc::downgrade(&body);
         gtk_lush_tasks::spawn_blocking_then(
             view.clone(),
@@ -114,7 +138,7 @@ impl NoteBody {
     /// Run `then` once the body is installed (now, when it already is).
     pub(super) fn when_installed(
         self: &Rc<Self>,
-        then: impl FnOnce(&Rc<Self>, Option<&Arc<String>>) + 'static,
+        then: impl FnOnce(&Rc<Self>, Option<&Arc<DisposalOwned<String>>>) + 'static,
     ) {
         if let Some(waiting) = self.waiting.borrow_mut().as_mut() {
             waiting.push(Box::new(then));
@@ -142,7 +166,7 @@ impl NoteBody {
         if let Some(text) = self.folded.borrow().clone() {
             gtk_lush_tasks::spawn_blocking_then(
                 self.view.clone(),
-                move || String::clone(&text),
+                move || text.as_str().to_owned(),
                 move |_view, text| {
                     callback(buffer_snapshot::BufferSnapshotOutcome::Captured(
                         buffer_snapshot::BufferSnapshotPayload::direct(text),
@@ -154,7 +178,11 @@ impl NoteBody {
         super::editor_execution::snapshot_note_buffer_text(self.view.buffer(), callback)
     }
 
-    fn start_sliced_install(self: &Rc<Self>, text: Arc<String>, plan: Option<Arc<FoldPlan>>) {
+    fn start_sliced_install(
+        self: &Rc<Self>,
+        text: Arc<DisposalOwned<String>>,
+        plan: Option<Arc<FoldPlan>>,
+    ) {
         if let Some(plan) = plan.as_ref() {
             *self.folded.borrow_mut() = Some(Arc::clone(&text));
             let weak = Arc::downgrade(&text);
@@ -166,13 +194,13 @@ impl NoteBody {
             body: Rc::downgrade(self),
             text,
             offset: 0,
-            fold: plan.map(|plan| FoldedInstall::new(plan, &self.view.buffer(), false)),
+            fold: plan.map(|plan| Box::new(FoldedInstall::new(plan, &self.view.buffer(), false))),
             boundaries: BoundaryLedger::default(),
         };
         session.schedule();
     }
 
-    fn finish_install(self: &Rc<Self>, text: &Arc<String>) {
+    fn finish_install(self: &Rc<Self>, text: &Arc<DisposalOwned<String>>) {
         self.installing.set(false);
         if self.folded.borrow().is_some() {
             self.notice.set_label(FOLDED_NOTE_NOTICE);
@@ -206,9 +234,9 @@ impl std::fmt::Debug for NoteBody {
 /// One deferred install in flight.
 struct InstallSession {
     body: Weak<NoteBody>,
-    text: Arc<String>,
+    text: Arc<DisposalOwned<String>>,
     offset: usize,
-    fold: Option<FoldedInstall>,
+    fold: Option<Box<FoldedInstall>>,
     /// The boundary marks of the sliced protected install (C3). A note body
     /// is installed once and never cleared by an install, so they stay in the
     /// buffer until it is freed, as inert marks.
@@ -230,7 +258,7 @@ impl InstallSession {
             &body.view.buffer(),
             &self.text,
             &mut self.offset,
-            &mut self.fold,
+            self.fold.as_deref_mut(),
             &self.boundaries,
         );
         if step == InstallSlice::Inserted {

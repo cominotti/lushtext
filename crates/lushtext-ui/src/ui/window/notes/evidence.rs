@@ -95,6 +95,9 @@ pub struct NotesEvidence {
     /// The longest note-body install turn so far, process-wide, in
     /// microseconds.
     pub largest_note_body_install_slice_us: u64,
+    /// Guarded note bodies retired off the GTK main thread so far,
+    /// process-wide.
+    pub note_bodies_retired_off_gtk: u64,
     /// Rows of closed browsers still waiting to be retired in slices
     /// (`lighten-notes-browser-rows` D4); 0 once every closed browser's list is
     /// empty and its source released.
@@ -243,6 +246,8 @@ impl LushtextWindow {
             largest_note_body_install_slice_us:
                 super::install_execution::NOTE_BODY_LARGEST_SLICE_US
                     .load(std::sync::atomic::Ordering::Acquire),
+            note_bodies_retired_off_gtk: super::install_execution::NOTE_BODY_RETIRED_OFF_GTK
+                .load(std::sync::atomic::Ordering::Acquire),
         }
     }
 

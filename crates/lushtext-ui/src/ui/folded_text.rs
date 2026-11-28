@@ -68,6 +68,12 @@ impl SurfaceText for String {
     }
 }
 
+impl SurfaceText for crate::ui::plain_disposal::DisposalOwned<String> {
+    fn surface_text(&self) -> &str {
+        self
+    }
+}
+
 /// The byte range of characters `start..end` of `text` (clamped to its end).
 /// One forward scan over at most `end` characters: **worker only** for a
 /// document-sized text.
@@ -609,10 +615,10 @@ pub(crate) fn install_slice(
     buffer: &gtk4::TextBuffer,
     text: &str,
     offset: &mut usize,
-    fold: &mut Option<FoldedInstall>,
+    fold: Option<&mut FoldedInstall>,
     ledger: &BoundaryLedger,
 ) -> InstallSlice {
-    if let Some(install) = fold.as_mut() {
+    if let Some(install) = fold {
         if !tail_insert_admitted() {
             return InstallSlice::Deferred;
         }

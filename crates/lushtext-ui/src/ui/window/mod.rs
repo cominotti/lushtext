@@ -138,8 +138,8 @@ pub use local_history::{
 pub use notes::{
     NotesBrowserRuntimeSnapshot, NotesEvidence, OpenEditorNoteCaptureEvidence,
     OpenEditorSnapshotEvidence, set_bookmark_excerpt_preview_delay_for_test,
-    set_note_source_delay_for_test, set_notes_browser_budgets_for_test,
-    set_notes_browser_query_delay_for_test,
+    set_next_note_body_disposal_probe_for_test, set_note_source_delay_for_test,
+    set_notes_browser_budgets_for_test, set_notes_browser_query_delay_for_test,
 };
 #[cfg(feature = "test-utils")]
 pub use notifications::evidence::{

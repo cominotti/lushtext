@@ -128,8 +128,10 @@ macro_rules! define_id {
 
 pub mod generations;
 pub mod ids;
+pub mod shared;
 pub mod units;
 
 pub use generations::*;
 pub use ids::*;
+pub use shared::{SharedPath, SharedPaths, SharedStr};
 pub use units::{Bytes, CharCount, LineIndex, Micros, Sp};
