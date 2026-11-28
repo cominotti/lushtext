@@ -303,7 +303,7 @@ impl LushtextCommandPalette {
         if let Some(workspace_folder) = folder {
             self.admit_index_update(FileIndexUpdate::Create {
                 path: path.to_path_buf(),
-                workspace_folder,
+                workspace_folder: workspace_folder.to_path_buf(),
             });
         }
     }

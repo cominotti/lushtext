@@ -650,7 +650,18 @@ impl LushtextWorkspaceSection {
 
         let (open_row_paths, active_row_paths) = {
             let snapshot = imp.file_row_state_snapshot.borrow();
-            (snapshot.open_identities(), snapshot.active_identities())
+            (
+                snapshot
+                    .open_identities()
+                    .iter()
+                    .map(lushtext_model::values::SharedPath::to_path_buf)
+                    .collect(),
+                snapshot
+                    .active_identities()
+                    .iter()
+                    .map(lushtext_model::values::SharedPath::to_path_buf)
+                    .collect(),
+            )
         };
 
         WorkspaceSectionEvidence {

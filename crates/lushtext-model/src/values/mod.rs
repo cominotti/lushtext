@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Zero-cost domain value objects and unit/generation wrappers.
+//! Zero-cost domain value objects, unit/generation wrappers, and cold shared metadata.
 //!
-//! Every type in this module is `#[repr(transparent)]`, `Copy`, `const fn`,
-//! `#[serde(transparent)]`, Kani-compatible (`#[cfg_attr(kani, derive(kani::Arbitrary))]`),
-//! and verified at compile time to match the byte size of its underlying primitive.
+//! All scalar and identifier wrappers in this module (`Bytes`, `Sp`, `Micros`,
+//! `CharCount`, `LineIndex`, `EditorId`, and `*Generation`) are
+//! `#[repr(transparent)]`, `Copy`, `const fn`, `#[serde(transparent)]`,
+//! Kani-compatible (`#[cfg_attr(kani, derive(kani::Arbitrary))]`), and verified
+//! at compile time to match the byte size of their underlying primitive.
+//!
+//! `shared` holds non-Kani, `Arc`-backed immutable metadata wrappers
+//! (`SharedPath`, `SharedStr`, `SharedPaths`) for cold UI/worker seams outside
+//! `ui/**/policy.rs` and Kani-checked cores.
 //!
 //! Boundary discipline ("no newtype soup"): use these wrappers across module/workflow
 //! seams (`seams.rs`, `policy.rs`, state structs, and unit-carrying thresholds),
@@ -128,8 +134,10 @@ macro_rules! define_id {
 
 pub mod generations;
 pub mod ids;
+pub mod shared;
 pub mod units;
 
 pub use generations::*;
 pub use ids::*;
+pub use shared::{SharedPath, SharedPaths, SharedStr};
 pub use units::{Bytes, CharCount, LineIndex, Micros, Sp};

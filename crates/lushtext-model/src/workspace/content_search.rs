@@ -7,11 +7,11 @@
 use std::collections::HashSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use super::workspace_search::{WorkspaceSearchFallbackMetrics, WorkspaceSearchIncompleteReason};
+use crate::values::{SharedPath, SharedStr};
 
 /// Maximum UTF-8 bytes retained for one matching search line.
 ///
@@ -69,7 +69,7 @@ pub struct SearchMatch {
     /// Absolute path to the file containing the match, interned once per file
     /// by the worker and shared by every match of that file, its file row and
     /// the navigation index (`bound-lists-by-budget-not-count` task 3.3).
-    pub path: Arc<Path>,
+    pub path: SharedPath,
     /// 1-based line number of the match.
     pub line_number: u64,
     /// Bounded text of the matching line (no trailing newline).
@@ -77,7 +77,7 @@ pub struct SearchMatch {
     /// For long lines this is a match-containing excerpt, not the full source
     /// line. `line_truncated` tells Replace All preview to avoid using it as a
     /// correctness snapshot.
-    pub line_content: Arc<str>,
+    pub line_content: SharedStr,
     /// Byte range within the stored `line_content` that matched the query.
     pub match_range: Range<usize>,
     /// Whether `line_content` was shortened from the source line.
@@ -92,7 +92,7 @@ impl SearchMatch {
     /// Build one bounded search match from a full source line.
     #[must_use]
     pub fn new(
-        path: impl Into<Arc<Path>>,
+        path: impl Into<SharedPath>,
         line_number: u64,
         line_content: &str,
         match_range: Range<usize>,
@@ -104,7 +104,7 @@ impl SearchMatch {
             id: SearchMatchId::from_index(0),
             path: path.into(),
             line_number,
-            line_content: Arc::from(line_content),
+            line_content: SharedStr::from(line_content),
             match_range,
             line_truncated,
             original_line_byte_len,
@@ -413,11 +413,11 @@ pub struct Replacement {
     /// 1-based line number.
     pub line_number: u64,
     /// The original full line content (before replacement).
-    pub original_line: Arc<str>,
+    pub original_line: SharedStr,
     /// The full line content after applying the replacement (for preview).
     pub replaced_line: String,
     /// The literal replacement text for the matched range.
-    pub replacement: Arc<str>,
+    pub replacement: SharedStr,
     /// Byte range within `original_line` that matched the query.
     pub match_range: Range<usize>,
 }

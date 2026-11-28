@@ -26,10 +26,10 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use crate::filesystem::metadata as fs_metadata;
 use crate::workspace::file_tree;
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 
 use super::arena::{
@@ -425,7 +425,7 @@ impl Traversal<'_> {
         folder: &Path,
         canonical_folder: &Path,
     ) -> Result<FolderEnd, FileIndexTruncationReason> {
-        let display = Arc::new(folder.to_path_buf());
+        let display = SharedPath::from(folder);
         grow_doubling(&mut self.index.folders, 1, &mut self.ledger)?;
         self.ledger.try_charge_installed(folder_bytes(&display))?;
         let folder_id = u32::try_from(self.index.folders.len())

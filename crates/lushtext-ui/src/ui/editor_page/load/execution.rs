@@ -60,10 +60,9 @@ use lushtext_services::coordination::notifications::{
 };
 use lushtext_services::editor_io::{self, EditorLoadError};
 
-use super::admission::{self, GuardedLoadResult, TransientLoadPermit};
+use super::admission::{self, GuardedLoadResult, LoadRequestTicket, TransientLoadPermit};
 use super::policy::{
     self, AbortDisposition, InstallSliceAction, InstallSlicePacing, LoadInstallPhase, LoadOutcome,
-    LoadRequestTicket,
 };
 use super::{evidence, retirement};
 
@@ -90,7 +89,7 @@ pub(crate) struct ChunkedLoadInstall {
     pub(super) editor: glib::WeakRef<LushtextEditorPage>,
     pub(super) buffer: sourceview5::Buffer,
     pub(super) end_mark: Option<gtk4::TextMark>,
-    pub(super) loaded: Option<GuardedLoadResult>,
+    pub(super) loaded: Option<Box<GuardedLoadResult>>,
     pub(super) byte_offset: usize,
     pub(super) generation: LoadGeneration,
     pub(super) source_id: Option<glib::SourceId>,
@@ -105,7 +104,7 @@ pub(crate) struct ChunkedLoadInstall {
     pub(super) slice_count: u64,
     /// The sliced install of a protected body (`ui::protected_fold`, C3):
     /// its tails go in hidden, slice by slice. `None` for an ordinary body.
-    pub(super) folded: Option<FoldedInstall>,
+    pub(super) folded: Option<Box<FoldedInstall>>,
     /// The chunked highlighted install's progress (`chunked-highlight-attach`,
     /// C6b); `None` for every other install.
     pub(super) highlight: Option<crate::ui::editor_page::language_attach::HighlightChunks>,
@@ -388,7 +387,7 @@ fn run_text_insert_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     let end = {
         let _span = PostOpenSpan::begin("post_open_install_slice");
         crate::ui::editor_page::edit_lock::with_own_edit(|| {
-            if let (Some(install), Some(editor)) = (folded.as_mut(), &editor) {
+            if let (Some(install), Some(editor)) = (folded.as_deref_mut(), &editor) {
                 let append = || buffer.iter_at_mark(&mark);
                 let end = install.step(
                     &append,
@@ -604,7 +603,7 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     };
     // Retain admission through every final projection and callback. Dropping
     // it afterward schedules one coalesced queue drain.
-    complete_loaded_installation(&editor, loaded, restore);
+    complete_loaded_installation(&editor, *loaded, restore);
     conclude_installation(&editor, session, permit);
 }
 
@@ -881,12 +880,12 @@ fn start_chunked_install(
         .profile
         .fold_plan
         .clone()
-        .map(|plan| FoldedInstall::new(plan, buffer.upcast_ref(), true));
+        .map(|plan| Box::new(FoldedInstall::new(plan, buffer.upcast_ref(), true)));
     let session = Rc::new(RefCell::new(ChunkedLoadInstall {
         editor: editor.downgrade(),
         buffer,
         end_mark: None,
-        loaded: Some(loaded),
+        loaded: Some(Box::new(loaded)),
         byte_offset: 0,
         generation,
         source_id: None,

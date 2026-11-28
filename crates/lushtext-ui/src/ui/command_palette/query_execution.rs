@@ -30,7 +30,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::ui::plain_disposal::DisposalOwned;
-use lushtext_model::values::FlightGeneration;
+use lushtext_model::values::{FlightGeneration, SharedStr};
 use lushtext_model::workspace::palette::{
     PaletteCategory, PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode,
 };
@@ -44,15 +44,16 @@ use super::policy;
 
 /// One compact query plus the shared source snapshots retained by the latest slot.
 ///
-/// Every field is an `Arc`, so a superseded request keeps sources alive without
-/// copying an index, a note body, or a tab list.
+/// Every field is shared by reference count (`SharedStr` or `Arc`), so a
+/// superseded request keeps sources alive without copying an index, a note
+/// body, or a tab list.
 pub(super) struct PaletteQueryRequest {
-    pub query: Arc<str>,
+    pub query: SharedStr,
     pub mode: SearchMode,
     pub index: Arc<DisposalOwned<FileIndex>>,
     pub open_tabs: Arc<[PaletteFileEntry]>,
     pub note_entries: Arc<DisposalOwned<Box<[PaletteNoteEntry]>>>,
-    pub workspace_group_label: Arc<str>,
+    pub workspace_group_label: SharedStr,
     /// The category view shown when the request was captured, `None` for the
     /// grouped view.
     pub category: Option<PaletteCategory>,
@@ -130,12 +131,12 @@ impl LushtextCommandPalette {
         let imp = self.imp();
         let _ = imp.search_debounce.advance();
         let request = PaletteQueryRequest {
-            query: Arc::from(query),
+            query: SharedStr::from(query),
             mode: imp.mode.get(),
             index: Arc::clone(&imp.file_index.borrow()),
             open_tabs: Arc::clone(&imp.open_tabs.borrow()),
             note_entries: Arc::clone(&imp.note_entries.borrow()),
-            workspace_group_label: Arc::from(imp.workspace_group_label.borrow().as_str()),
+            workspace_group_label: SharedStr::from(imp.workspace_group_label.borrow().as_str()),
             category: imp.category.get(),
         };
         let start = imp.search_flight.borrow_mut().submit(request);

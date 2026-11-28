@@ -40,9 +40,6 @@
 //! `clear_slice_extends_to_paragraph_end`, which together say "take at most
 //! one budget of characters, then keep going to the next line start".
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 #[cfg(kani)]
 mod kani_proofs;
 
@@ -147,48 +144,26 @@ pub enum LoadOutcome {
 /// parameters through the planning dispatch, the admission queue, and the worker
 /// completion, and to be compared clause by clause at the end. Constructing it
 /// once at the workflow entry point and validating it as a unit is what makes a
-/// mismatched call a type error rather than an invisible one.
-///
-/// The ticket carries **dispatch-time expectation**; the editor supplies the
-/// live values, which is why the predicate takes the editor rather than a
-/// `*Facts` companion.
-#[derive(Clone, Debug)]
-pub(crate) struct LoadRequestTicket {
-    /// The load generation this request was dispatched under.
-    pub(crate) load_generation: LoadGeneration,
-    /// The cancellation token this request was dispatched with.
-    pub(crate) cancel_token: Arc<AtomicBool>,
+/// State of a load ticket's cancellation token compared against the live editor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LoadCancelTokenState {
+    /// Ticket holds the current active token and cancellation has not been requested.
+    ActiveUnexpired,
+    /// Ticket token was superseded by a newer request or cancellation was requested.
+    SupersededOrCancelled,
 }
 
-impl LoadRequestTicket {
-    /// Build the ticket one load request is dispatched and validated under.
-    pub(crate) fn new(load_generation: LoadGeneration, cancel_token: Arc<AtomicBool>) -> Self {
-        Self {
-            load_generation,
-            cancel_token,
-        }
-    }
-
-    /// Whether the user or a newer request has asked this load to stop.
-    pub(crate) fn cancel_requested(&self) -> bool {
-        self.cancel_token.load(Ordering::Acquire)
-    }
-}
-
-/// Whether a dispatched request still describes the editor's live load state.
+/// Whether a dispatched request still describes its editor's live load state.
 ///
-/// All three clauses must hold: the generation must still be the one dispatched,
-/// the editor must still hold the very token this request carries (a newer load
-/// installs a fresh `Arc`, so pointer identity is what stops an older worker
-/// from being un-cancelled), and that token must not be set.
-pub(crate) fn load_request_is_current(
-    ticket: &LoadRequestTicket,
+/// Both clauses must hold: the generation must still be the one dispatched and
+/// the cancellation token must still be the active unexpired token.
+pub(crate) const fn load_request_is_current(
+    ticket_generation: LoadGeneration,
     live_generation: LoadGeneration,
-    live_cancel_token: &Arc<AtomicBool>,
+    token_state: LoadCancelTokenState,
 ) -> bool {
-    ticket.load_generation == live_generation
-        && Arc::ptr_eq(&ticket.cancel_token, live_cancel_token)
-        && !ticket.cancel_requested()
+    ticket_generation.get() == live_generation.get()
+        && matches!(token_state, LoadCancelTokenState::ActiveUnexpired)
 }
 
 /// Whether a bounded installation's slices may still publish into the buffer.
@@ -912,47 +887,23 @@ mod tests {
         ));
     }
 
-    fn token() -> Arc<AtomicBool> {
-        Arc::new(AtomicBool::new(false))
-    }
-
     #[test]
     fn ticket_is_current_only_when_generation_token_and_cancellation_all_agree() {
-        let cancel = token();
-        let ticket = LoadRequestTicket::new(LoadGeneration::new(7), Arc::clone(&cancel));
-
         assert!(load_request_is_current(
-            &ticket,
             LoadGeneration::new(7),
-            &cancel
+            LoadGeneration::new(7),
+            LoadCancelTokenState::ActiveUnexpired,
         ));
         assert!(!load_request_is_current(
-            &ticket,
+            LoadGeneration::new(7),
             LoadGeneration::new(8),
-            &cancel
+            LoadCancelTokenState::ActiveUnexpired,
         ));
         assert!(!load_request_is_current(
-            &ticket,
             LoadGeneration::new(7),
-            &token()
-        ));
-
-        cancel.store(true, Ordering::Release);
-        assert!(!load_request_is_current(
-            &ticket,
             LoadGeneration::new(7),
-            &cancel
+            LoadCancelTokenState::SupersededOrCancelled,
         ));
-    }
-
-    #[test]
-    fn ticket_reports_cancellation() {
-        let cancel = token();
-        let ticket = LoadRequestTicket::new(LoadGeneration::new(1), Arc::clone(&cancel));
-        assert!(!ticket.cancel_requested());
-
-        cancel.store(true, Ordering::Release);
-        assert!(ticket.cancel_requested());
     }
 
     #[test]

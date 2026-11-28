@@ -33,6 +33,7 @@ use crate::ui::sidebar::policy::{
     WorkspaceScanFinish as ChildScanFinish, WorkspaceScanSubmission as ChildScanSubmission,
     WorkspaceScanTicket as ChildScanTicket,
 };
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_model::workspace::{FolderTreeEntry, WorkspaceFolder, WorkspaceFolderId};
 
@@ -41,19 +42,19 @@ use super::LushtextWorkspaceSection;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum FolderEmptyProbeKey {
     Stable(WorkspaceFolderId),
-    Path(PathBuf),
+    Path(SharedPath),
 }
 
 pub(super) struct ActiveFolderEmptyProbe {
     ticket: ChildScanTicket,
-    folder_path: PathBuf,
+    folder_path: SharedPath,
 }
 
 pub(super) struct PendingFolderEmptyProbe {
     ticket: ChildScanTicket,
     store: glib::WeakRef<gio::ListStore>,
     item: glib::WeakRef<FileTreeItem>,
-    folder_path: PathBuf,
+    folder_path: SharedPath,
     initial_index: u32,
     visibility: WorkspaceEntryVisibility,
 }
@@ -97,12 +98,12 @@ impl LushtextWorkspaceSection {
         let top_level_store = gio::ListStore::new::<FileTreeItem>();
         let visibility = current_entry_visibility();
         for entry in folders {
-            let folder_path = entry.path().to_path_buf();
+            let folder_path = SharedPath::from(entry.path());
             let is_dir = entry.is_dir();
             let item = self.file_item_for_folder_entry(&folder_path, is_dir);
             let index = top_level_store.n_items();
             top_level_store.append(&item);
-            self.cache_top_level_item(folder_path.clone(), index as usize);
+            self.cache_top_level_item(folder_path.to_path_buf(), index as usize);
             if is_dir {
                 schedule_folder_empty_check(
                     self,
@@ -194,7 +195,7 @@ impl LushtextWorkspaceSection {
                                 self,
                                 top_level_store,
                                 &item,
-                                path.to_path_buf(),
+                                SharedPath::from(path),
                                 index,
                                 current_entry_visibility(),
                             );
@@ -615,7 +616,7 @@ impl LushtextWorkspaceSection {
 
     /// Mapped realized row widgets with the path of the item each one shows,
     /// read through the section's one realized-row walk.
-    fn mapped_row_widgets(&self) -> Vec<(gtk4::Widget, Option<PathBuf>)> {
+    fn mapped_row_widgets(&self) -> Vec<(gtk4::Widget, Option<SharedPath>)> {
         let mut rows = Vec::new();
         super::for_each_realized_file_row_overlay(self, |overlay| {
             if let Some(row_widget) = overlay.parent()
@@ -717,7 +718,7 @@ pub(super) fn schedule_folder_empty_check(
     section: &LushtextWorkspaceSection,
     top_level_store: &gio::ListStore,
     item: &FileTreeItem,
-    folder_path: PathBuf,
+    folder_path: SharedPath,
     initial_index: u32,
     visibility: WorkspaceEntryVisibility,
 ) {

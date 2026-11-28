@@ -41,6 +41,7 @@ use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRender
 use crate::ui::status_bar::MessageKind;
 use crate::ui::{accessibility, buffer_snapshot};
 use lushtext_model::persistence::note::{NoteEditorPresentation, NoteViewMode, RichNoteBody};
+use lushtext_model::values::{SharedPath, SharedPaths, SharedStr};
 use lushtext_services::{
     notes::document_note_service, notes::folder_note_service, persistence::json_store,
 };
@@ -254,9 +255,9 @@ impl LushtextWindow {
         path: &Path,
         workspace_folders: Vec<PathBuf>,
     ) {
-        let path = path.to_path_buf();
+        let path = SharedPath::from(path);
         let path_for_load = path.clone();
-        let path_for_dialog = path;
+        let workspace_folders = SharedPaths::from(workspace_folders);
         let window_weak = self.downgrade();
         spawn_blocking_then(
             (),
@@ -268,7 +269,7 @@ impl LushtextWindow {
                 Ok(note) => {
                     if let Some(window) = window_weak.upgrade() {
                         window.present_document_note_dialog(
-                            &path_for_dialog,
+                            path,
                             workspace_folders,
                             note.as_ref().map(|document| &document.note),
                             None,
@@ -278,7 +279,7 @@ impl LushtextWindow {
                 Err(error) => {
                     tracing::error!(
                         "Failed to load document note for {}: {error}",
-                        path_for_dialog.display()
+                        path.display()
                     );
                     if let Some(window) = window_weak.upgrade() {
                         window.publish_status_message(
@@ -306,6 +307,7 @@ impl LushtextWindow {
         content.set_margin_top(6);
         content.set_margin_bottom(6);
 
+        let workspace_name = SharedStr::from(workspace_name);
         let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         for folder in folders {
             let button = gtk4::Button::new();
@@ -320,8 +322,8 @@ impl LushtextWindow {
             label.set_hexpand(true);
             button.set_child(Some(&label));
 
-            let workspace_name = workspace_name.to_string();
-            let folder_for_button = folder;
+            let workspace_name = workspace_name.clone();
+            let folder_for_button = SharedPath::from(folder);
             let window_weak = self.downgrade();
             let dialog_weak = dialog.downgrade();
             button.connect_clicked(move |_| {
@@ -350,10 +352,9 @@ impl LushtextWindow {
 
     /// Load and present the folder note attached to one workspace folder.
     pub(super) fn open_folder_note_for_folder(&self, workspace_name: &str, folder: &Path) {
-        let workspace_name = workspace_name.to_string();
-        let folder = folder.to_path_buf();
+        let workspace_name = SharedStr::from(workspace_name);
+        let folder = SharedPath::from(folder);
         let folder_for_load = folder.clone();
-        let folder_for_dialog = folder;
         let window_weak = self.downgrade();
         spawn_blocking_then(
             (),
@@ -367,8 +368,8 @@ impl LushtextWindow {
                     Self::trace_browse_recovery_diagnostics(&load.diagnostics);
                     if let Some(window) = window_weak.upgrade() {
                         window.present_folder_note_dialog(
-                            &workspace_name,
-                            &folder_for_dialog,
+                            workspace_name,
+                            folder,
                             load.document.as_ref().map(|document| &document.note),
                             None,
                         );
@@ -383,7 +384,7 @@ impl LushtextWindow {
                 Err(error) => {
                     tracing::error!(
                         "Failed to load folder note for {}: {error}",
-                        folder_for_dialog.display()
+                        folder.display()
                     );
                     if let Some(window) = window_weak.upgrade() {
                         window.publish_status_message(
@@ -403,8 +404,8 @@ impl LushtextWindow {
     /// save is a retry rather than a loss.
     fn present_document_note_dialog(
         &self,
-        path: &Path,
-        workspace_folders: Vec<PathBuf>,
+        path: SharedPath,
+        workspace_folders: SharedPaths,
         existing_note: Option<&RichNoteBody>,
         recovered_text: Option<&str>,
     ) {
@@ -441,7 +442,13 @@ impl LushtextWindow {
         let start = NoteEditorStart::derive(existing_note, recovered_text);
         let (surface, note_body) = build_note_editor_surface(
             start.initial_text,
-            &MarkdownPreviewRenderContext::new(Some(path.to_path_buf()), workspace_folders.clone()),
+            &MarkdownPreviewRenderContext::new(
+                Some(path.to_path_buf()),
+                workspace_folders
+                    .iter()
+                    .map(SharedPath::to_path_buf)
+                    .collect(),
+            ),
             start.initial_mode,
             NOTE_EDITOR_RENDER_PLACEHOLDER,
         );
@@ -454,7 +461,6 @@ impl LushtextWindow {
         content.append(&surface);
         dialog.set_extra_child(Some(&content));
 
-        let path = path.to_path_buf();
         let existing_note = existing_note.cloned();
         let folders_for_save = workspace_folders;
         let window = self.clone();
@@ -544,7 +550,7 @@ impl LushtextWindow {
                                     MessageKind::Error,
                                 );
                                 window.present_document_note_dialog(
-                                    &path_for_recovery,
+                                    path_for_recovery,
                                     folders_for_recovery,
                                     existing_for_recovery.as_ref(),
                                     Some(text.as_str()),
@@ -564,8 +570,8 @@ impl LushtextWindow {
     /// [`Self::present_document_note_dialog`] for why the text travels back.
     fn present_folder_note_dialog(
         &self,
-        workspace_name: &str,
-        folder: &Path,
+        workspace_name: SharedStr,
+        folder: SharedPath,
         existing_note: Option<&RichNoteBody>,
         recovered_text: Option<&str>,
     ) {
@@ -592,7 +598,7 @@ impl LushtextWindow {
         content.set_margin_top(6);
         content.set_margin_bottom(6);
 
-        let title_label = gtk4::Label::new(Some(workspace_name));
+        let title_label = gtk4::Label::new(Some(&workspace_name));
         title_label.set_halign(gtk4::Align::Start);
         title_label.set_xalign(0.0);
         title_label.add_css_class("heading");
@@ -621,9 +627,8 @@ impl LushtextWindow {
         content.append(&surface);
         dialog.set_extra_child(Some(&content));
 
-        let folder = folder.to_path_buf();
         let existing_note = existing_note.cloned();
-        let workspace_name_for_recovery = workspace_name.to_string();
+        let workspace_name_for_recovery = workspace_name;
         let window = self.clone();
         dialog.choose(Some(self), gio::Cancellable::NONE, move |response| {
             if response == RESPONSE_CLEAR {
@@ -706,8 +711,8 @@ impl LushtextWindow {
                                     MessageKind::Error,
                                 );
                                 window.present_folder_note_dialog(
-                                    &name_for_recovery,
-                                    &folder_for_recovery,
+                                    name_for_recovery,
+                                    folder_for_recovery,
                                     existing_for_recovery.as_ref(),
                                     Some(text.as_str()),
                                 );

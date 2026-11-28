@@ -1233,10 +1233,17 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-hexagonal-boundaries check-domain-value-types check-error-contracts check-idiomatic-state check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-python-hygiene check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
+check-policy: check-filesystem-boundary check-hexagonal-boundaries check-domain-value-types check-error-contracts check-idiomatic-state check-arc-safety check-temp-scope check-rustc-frontend-threads test-flatpak-install-origin check-flatpak-source-tree check-agent-helpers check-build-cache-helpers check-precommit-scope check-python-hygiene check-session-hygiene check-cargo-public-api-install check-settings-writes check-font-zoom-registration check-signal-connections check-thresholds check-responsiveness-lane check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-flatpak-ci-builds check-explicit-simd check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology check-kill-point-gating check-workflow-scripts
 
 # Pure-script subset of check-policy (zero Cargo builds) for docs-only hooks and CI.
 check-policy-docs: check-workflow-scripts check-agent-docs check-agent-skills check-workflow-timeouts check-flatpak-ci-builds check-precommit-scope check-python-hygiene check-accessibility-policy check-automation-docs check-end-user-smoke-workflow check-workflow-boundaries check-gtk-axioms check-gtk-lush-policy gtk-lush-adoption-matrix
+
+# Two-zone Arc safety, SharedPath/SharedStr adoption, and cold generic-Fn ratchet.
+.PHONY: check-arc-safety
+check-arc-safety:
+	@echo "Checking Two-Zone Arc safety and cold generic-Fn ceilings..."
+	python3 ./scripts/check-arc-safety.py --self-test
+	python3 ./scripts/check-arc-safety.py
 
 # Hexagonal crate boundaries and 1,000-line file-size ratchet.
 check-hexagonal-boundaries:

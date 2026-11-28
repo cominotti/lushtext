@@ -20,7 +20,6 @@
 //! deselected, must not present its popover.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gdk;
@@ -28,6 +27,7 @@ use gtk4::prelude::*;
 use gtk4::{self, glib};
 
 use crate::ui::accessibility;
+use lushtext_model::values::{SharedPath, SharedStr};
 use lushtext_services::workspace::file_peek::{
     self, PeekPreviewState, PeekRequestToken, PeekSnapshot,
 };
@@ -67,7 +67,10 @@ pub(super) enum PeekPhase {
     #[default]
     Closed,
     /// Preview is open for `path`; `open_allowed` tracks whether promotion is permitted.
-    Open { path: PathBuf, open_allowed: bool },
+    Open {
+        path: SharedPath,
+        open_allowed: bool,
+    },
 }
 
 /// Visible session state for the section-owned peek flow.
@@ -93,8 +96,8 @@ const UNKNOWN_MODIFIED_LABEL: &str = "Modified time unavailable";
 
 /// Selection-derived preview target used only inside the widget adapter.
 struct PeekTarget {
-    absolute_path: PathBuf,
-    display_path: String,
+    absolute_path: SharedPath,
+    display_path: SharedStr,
 }
 
 impl LushtextWorkspaceSection {
@@ -130,7 +133,7 @@ impl LushtextWorkspaceSection {
 
     /// Return the path currently shown in the peek card, if any.
     #[must_use]
-    pub fn peeked_path(&self) -> Option<PathBuf> {
+    pub fn peeked_path(&self) -> Option<SharedPath> {
         match &*self.imp().peek_session.phase.borrow() {
             PeekPhase::Open { path, .. } => Some(path.clone()),
             PeekPhase::Closed => None,
@@ -442,7 +445,7 @@ impl LushtextWorkspaceSection {
 
     /// Start an async snapshot load for the current selection.
     fn start_peek_request(&self, target: PeekTarget) {
-        let loading = PeekSnapshot::loading(&target.absolute_path, target.display_path.clone());
+        let loading = PeekSnapshot::loading(&target.absolute_path, target.display_path.as_str());
         let token = self.invalidate_peek_requests();
         self.imp().peek_session.phase.replace(PeekPhase::Open {
             path: target.absolute_path.clone(),
@@ -451,11 +454,11 @@ impl LushtextWorkspaceSection {
         self.render_peek_snapshot(&loading);
         self.reanchor_peek_to_selection();
 
-        let path = target.absolute_path.clone();
+        let path = target.absolute_path;
         let display_path = target.display_path;
         gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
-            move || file_peek::load_snapshot(&path, display_path),
+            move || file_peek::load_snapshot(&path, String::from(display_path)),
             move |section, snapshot| {
                 if !token.matches(section.imp().peek_session.active_generation.get()) {
                     return;
@@ -589,9 +592,9 @@ impl LushtextWorkspaceSection {
         if item.is_dir() || item.is_placeholder() {
             return None;
         }
-        let absolute_path = item.path()?;
+        let absolute_path = item.shared_path()?;
         Some(PeekTarget {
-            display_path: absolute_path.display().to_string(),
+            display_path: SharedStr::from(absolute_path.display().to_string()),
             absolute_path,
         })
     }

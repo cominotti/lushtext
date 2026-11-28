@@ -30,6 +30,7 @@ use glib::prelude::*;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
+use lushtext_model::values::SharedPath;
 use lushtext_services::coordination::notifications::NotificationSeverity;
 use lushtext_services::filesystem::{
     metadata as fs_metadata, mutate as fs_mutate, write as fs_write,
@@ -85,19 +86,18 @@ impl super::LushtextWorkspaceSection {
             context_path.clone()
         } else {
             match context_path.parent() {
-                Some(p) => p.to_path_buf(),
+                Some(p) => SharedPath::from(p),
                 None => return,
             }
         };
 
         let base = if is_dir { "New Folder" } else { "New File" };
         let context_is_dir = target.is_dir;
-        let base_owned = base.to_string();
         let target_dir_for_bg = target_dir.clone();
 
         gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
-            move || create_unique(&target_dir_for_bg, &base_owned, is_dir),
+            move || create_unique(&target_dir_for_bg, base, is_dir),
             move |section, result| {
                 let temp_path = match result {
                     Ok(p) => p,
@@ -300,7 +300,7 @@ impl super::LushtextWorkspaceSection {
 
     fn confirm_rename(
         &self,
-        old_path: &Path,
+        old_path: &SharedPath,
         entry: &gtk4::Entry,
         label: &gtk4::Label,
         content_box: &gtk4::Box,
@@ -332,7 +332,7 @@ impl super::LushtextWorkspaceSection {
         // so re-reading it in the completion could apply this rename's row
         // projection to a different file's row. See `sidebar::seams`.
         let ticket = FileOperationTicket::new(
-            old_path.to_path_buf(),
+            old_path.clone(),
             FileOperationTargetKind {
                 is_dir: self
                     .imp()
@@ -362,11 +362,11 @@ impl super::LushtextWorkspaceSection {
                 #[cfg(feature = "test-utils")]
                 crate::ui::sidebar::test_policy::delay_rename_worker();
                 let outcome = rename_target_guarded(worker_ticket.path(), &new_path);
-                (new_path, outcome)
+                (SharedPath::from(new_path), outcome)
             },
             move |section, (new_path, outcome)| {
                 let imp = section.imp();
-                let old_path = ticket.path().to_path_buf();
+                let old_path = ticket.shared_path().clone();
                 match outcome {
                     // One arm for both durabilities: a rename whose directory
                     // sync failed has still happened, so it is projected exactly
@@ -377,7 +377,7 @@ impl super::LushtextWorkspaceSection {
                             row.as_ref()
                                 .and_then(gtk4::TreeListRow::item)
                                 .and_downcast::<FileTreeItem>()
-                                .and_then(|item| item.path()),
+                                .and_then(|item| item.shared_path()),
                         );
                         if let Some(tree_row) = row.as_ref()
                             && ticket.row_is_current(&facts)
@@ -390,13 +390,13 @@ impl super::LushtextWorkspaceSection {
                                 section.rename_expanded_subtree(&old_path, &new_path);
                                 super::scan_execution::retire_dir_subtrees(
                                     &section,
-                                    std::slice::from_ref(&old_path),
+                                    &[old_path.to_path_buf()],
                                 );
                                 imp.dir_rows
                                     .borrow_mut()
-                                    .insert(new_path.clone(), tree_row.downgrade());
+                                    .insert(new_path.to_path_buf(), tree_row.downgrade());
                             }
-                            file_item.set_path(new_path.clone());
+                            file_item.set_shared_path(new_path.clone());
                             // `set_path` mutates the row model in place, so the
                             // flattened model emits no splice for the watcher mirror.
                             section.refresh_workspace_watch_row(tree_row);
@@ -419,7 +419,7 @@ impl super::LushtextWorkspaceSection {
                                 section.rename_expanded_subtree(&old_path, &new_path);
                                 super::scan_execution::retire_dir_subtrees(
                                     &section,
-                                    std::slice::from_ref(&old_path),
+                                    &[old_path.to_path_buf()],
                                 );
                             }
                             section.rename_cached_item(&old_path, &new_path);
@@ -478,7 +478,7 @@ impl super::LushtextWorkspaceSection {
 
     fn cancel_new_item(
         &self,
-        temp_path: &Path,
+        temp_path: &SharedPath,
         entry: &gtk4::Entry,
         label: &gtk4::Label,
         content_box: &gtk4::Box,
@@ -490,14 +490,13 @@ impl super::LushtextWorkspaceSection {
         self.imp().is_new_item.set(false);
 
         // Uses the captured context target instead of stat to avoid a synchronous syscall.
-        let path = temp_path.to_path_buf();
         let is_dir = self
             .imp()
             .context_target
             .borrow()
             .as_ref()
             .is_some_and(|target| target.is_dir);
-        spawn_temp_item_cleanup(path, is_dir);
+        spawn_temp_item_cleanup(temp_path.clone(), is_dir);
 
         let _ = self.remove_from_model(temp_path);
     }
@@ -795,7 +794,7 @@ fn create_unique(dir: &Path, base: &str, is_dir: bool) -> std::io::Result<PathBu
 /// The removal runs on the guarded worker pool so it is ordered against every
 /// other in-app writer for the same target, and the `is_dir` branch stays
 /// conservative: an empty-only `remove_dir_if_exists`, never a recursive delete.
-fn spawn_temp_item_cleanup(path: PathBuf, is_dir: bool) {
+fn spawn_temp_item_cleanup(path: SharedPath, is_dir: bool) {
     let expected_inode = fs_metadata::inode(&path).ok();
     gtk_lush_tasks::spawn_blocking_then(
         (),

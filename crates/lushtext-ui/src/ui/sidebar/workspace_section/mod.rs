@@ -68,9 +68,7 @@ mod scan_execution;
 mod watch;
 mod watch_targets;
 
-#[cfg(feature = "test-utils")]
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 use glib::Object;
@@ -81,6 +79,7 @@ use super::file_tree_item::FileTreeItem;
 use crate::ui::accessibility;
 use crate::ui::sidebar::seams::SidebarFileRowStateSnapshot;
 use crate::ui::signal_connect;
+use lushtext_model::values::{SharedPath, SharedStr};
 use lushtext_model::workspace::{WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId};
 use lushtext_services::coordination::notifications::NotificationSeverity;
 
@@ -88,17 +87,17 @@ use lushtext_services::coordination::notifications::NotificationSeverity;
 /// `"section-event"` GObject signal.
 #[derive(Clone)]
 pub(super) enum WorkspaceSectionEvent {
-    FileRenamed(PathBuf, PathBuf),
-    FileDeleted(PathBuf),
-    FileCreated(PathBuf),
-    LocalHistoryRequested(PathBuf),
-    DocumentNoteRequested(PathBuf),
-    PeekPromoted(PathBuf),
-    Message(String, NotificationSeverity),
+    FileRenamed(SharedPath, SharedPath),
+    FileDeleted(SharedPath),
+    FileCreated(SharedPath),
+    LocalHistoryRequested(SharedPath),
+    DocumentNoteRequested(SharedPath),
+    PeekPromoted(SharedPath),
+    Message(SharedStr, NotificationSeverity),
     RenameWorkspaceRequested(WorkspaceId),
     AddFolderRequested(WorkspaceId),
-    RemoveFolderRequested(WorkspaceId, WorkspaceFolderId, PathBuf),
-    FolderNoteForFolderRequested(WorkspaceId, PathBuf),
+    RemoveFolderRequested(WorkspaceId, WorkspaceFolderId, SharedPath),
+    FolderNoteForFolderRequested(WorkspaceId, SharedPath),
     ReorderFolderRequested(WorkspaceId, WorkspaceFolderId, WorkspaceFolderMoveDirection),
     ReorderFolderToIndexRequested(WorkspaceId, WorkspaceFolderId, usize),
     UnlistWorkspaceRequested(WorkspaceId),
@@ -286,17 +285,9 @@ impl LushtextWorkspaceSection {
     /// Test helper for applying an open/active file projection without a window.
     #[cfg(feature = "test-utils")]
     pub fn set_file_row_state_for_test(&self, open_paths: &[&Path], active_paths: &[&Path]) {
-        let open_identities = open_paths
-            .iter()
-            .map(|path| path.to_path_buf())
-            .collect::<HashSet<_>>();
-        let active_identities = active_paths
-            .iter()
-            .map(|path| path.to_path_buf())
-            .collect::<HashSet<_>>();
         self.set_file_row_state_snapshot(Rc::new(SidebarFileRowStateSnapshot::from_identities(
-            open_identities,
-            active_identities,
+            open_paths.iter().copied().map(SharedPath::from),
+            active_paths.iter().copied().map(SharedPath::from),
         )));
     }
 
@@ -309,7 +300,7 @@ impl LushtextWorkspaceSection {
         workspace_folder_id: Option<WorkspaceFolderId>,
     ) {
         *self.imp().context_target.borrow_mut() = Some(imp::FileContextTarget {
-            path: path.to_path_buf(),
+            path: SharedPath::from(path),
             is_dir,
             workspace_folder_id,
             expander: gtk4::TreeExpander::new(),
@@ -325,7 +316,7 @@ impl LushtextWorkspaceSection {
             });
     }
 
-    fn connect_section_event<F: Fn(&WorkspaceSectionEvent) + 'static>(&self, handler: F) {
+    fn connect_section_event(&self, handler: Box<dyn Fn(&WorkspaceSectionEvent) + 'static>) {
         signal_connect::connect_void(self, "section-event", false, move |values| {
             if let Some(Ok(boxed)) = values
                 .get(1)
@@ -342,83 +333,83 @@ impl LushtextWorkspaceSection {
 
     /// Store the callback invoked after inline rename changes a path.
     pub fn connect_file_renamed<F: Fn(&Path, &Path) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::FileRenamed(old_path, new_path) = event {
                 f(old_path, new_path);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked after a file or directory row is deleted.
     pub fn connect_file_deleted<F: Fn(&Path) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::FileDeleted(path) = event {
                 f(path);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked after a new file row is created.
     pub fn connect_file_created<F: Fn(&Path) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::FileCreated(path) = event {
                 f(path);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked when local history should open for one file row.
     pub fn connect_local_history_requested<F: Fn(&Path) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::LocalHistoryRequested(path) = event {
                 f(path);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked when a file row should open its document note.
     pub fn connect_document_note_requested<F: Fn(&Path) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::DocumentNoteRequested(path) = event {
                 f(path);
             }
-        });
+        }));
     }
 
     /// Store the callback used for lightweight window-owned status messages.
     pub fn connect_message<F: Fn(&str, NotificationSeverity) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::Message(text, severity) = event {
                 f(text, *severity);
             }
-        });
+        }));
     }
 
     /// Store the callback used when peek promotion should open a real tab.
     pub fn connect_peek_promoted<F: Fn(&Path) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::PeekPromoted(path) = event {
                 f(path);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked when the workspace header requests rename.
     pub fn connect_rename_workspace_requested<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::RenameWorkspaceRequested(workspace_id) = event {
                 f(workspace_id);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked when the section asks to add another folder.
     pub fn connect_add_folder_requested<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::AddFolderRequested(workspace_id) = event {
                 f(workspace_id);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked when a folder membership should be removed.
@@ -428,13 +419,11 @@ impl LushtextWorkspaceSection {
         &self,
         f: F,
     ) {
-        self.connect_section_event(move |event| {
-            if let WorkspaceSectionEvent::RemoveFolderRequested(workspace_id, folder_id, path) =
-                event
-            {
-                f(workspace_id, folder_id, path);
+        self.connect_section_event(Box::new(move |event| {
+            if let WorkspaceSectionEvent::RemoveFolderRequested(wid, fid, p) = event {
+                f(wid, fid, p);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked when a configured folder row requests its note.
@@ -442,11 +431,11 @@ impl LushtextWorkspaceSection {
         &self,
         f: F,
     ) {
-        self.connect_section_event(move |event| {
-            if let WorkspaceSectionEvent::FolderNoteForFolderRequested(workspace_id, path) = event {
-                f(workspace_id, path);
+        self.connect_section_event(Box::new(move |event| {
+            if let WorkspaceSectionEvent::FolderNoteForFolderRequested(wid, p) = event {
+                f(wid, p);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked when a folder should move up or down.
@@ -456,16 +445,11 @@ impl LushtextWorkspaceSection {
         &self,
         f: F,
     ) {
-        self.connect_section_event(move |event| {
-            if let WorkspaceSectionEvent::ReorderFolderRequested(
-                workspace_id,
-                folder_id,
-                direction,
-            ) = event
-            {
-                f(workspace_id, folder_id, *direction);
+        self.connect_section_event(Box::new(move |event| {
+            if let WorkspaceSectionEvent::ReorderFolderRequested(wid, fid, dir) = event {
+                f(wid, fid, *dir);
             }
-        });
+        }));
     }
 
     /// Store the callback used by drag-and-drop reorder with an absolute index.
@@ -475,43 +459,38 @@ impl LushtextWorkspaceSection {
         &self,
         f: F,
     ) {
-        self.connect_section_event(move |event| {
-            if let WorkspaceSectionEvent::ReorderFolderToIndexRequested(
-                workspace_id,
-                folder_id,
-                new_index,
-            ) = event
-            {
-                f(workspace_id, folder_id, *new_index);
+        self.connect_section_event(Box::new(move |event| {
+            if let WorkspaceSectionEvent::ReorderFolderToIndexRequested(wid, fid, idx) = event {
+                f(wid, fid, *idx);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked when the workspace should be unlisted.
     pub fn connect_unlist_workspace_requested<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::UnlistWorkspaceRequested(workspace_id) = event {
                 f(workspace_id);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked after drill-down focuses this section.
     pub fn connect_folder_focused<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::FolderFocused(workspace_id) = event {
                 f(workspace_id);
             }
-        });
+        }));
     }
 
     /// Store the callback invoked when the workspace-level folder note opens.
     pub fn connect_folder_note_requested<F: Fn(&WorkspaceId) + 'static>(&self, f: F) {
-        self.connect_section_event(move |event| {
+        self.connect_section_event(Box::new(move |event| {
             if let WorkspaceSectionEvent::FolderNoteRequested(workspace_id) = event {
                 f(workspace_id);
             }
-        });
+        }));
     }
 
     /// Emit the stored workspace-rename callback with this section's workspace id.
@@ -533,7 +512,7 @@ impl LushtextWorkspaceSection {
         self.emit_section_event(WorkspaceSectionEvent::RemoveFolderRequested(
             self.workspace_id(),
             folder_id.clone(),
-            path.to_path_buf(),
+            SharedPath::from(path),
         ));
     }
 
@@ -541,7 +520,7 @@ impl LushtextWorkspaceSection {
     pub fn notify_folder_note_for_folder_requested(&self, path: &Path) {
         self.emit_section_event(WorkspaceSectionEvent::FolderNoteForFolderRequested(
             self.workspace_id(),
-            path.to_path_buf(),
+            SharedPath::from(path),
         ));
     }
 
@@ -592,40 +571,43 @@ impl LushtextWorkspaceSection {
 
     /// Forward the peeked file path to the stored promotion callback.
     pub(super) fn notify_peek_promoted(&self, path: &Path) {
-        self.emit_section_event(WorkspaceSectionEvent::PeekPromoted(path.to_path_buf()));
+        self.emit_section_event(WorkspaceSectionEvent::PeekPromoted(SharedPath::from(path)));
     }
 
     /// Forward the selected file path to the stored local-history callback.
     pub(super) fn notify_local_history_requested(&self, path: &Path) {
         self.emit_section_event(WorkspaceSectionEvent::LocalHistoryRequested(
-            path.to_path_buf(),
+            SharedPath::from(path),
         ));
     }
 
     /// Forward the selected file path to the stored document-note callback.
     pub(super) fn notify_document_note_requested(&self, path: &Path) {
         self.emit_section_event(WorkspaceSectionEvent::DocumentNoteRequested(
-            path.to_path_buf(),
+            SharedPath::from(path),
         ));
     }
 
     pub fn notify_file_created(&self, path: &Path) {
-        self.emit_section_event(WorkspaceSectionEvent::FileCreated(path.to_path_buf()));
+        self.emit_section_event(WorkspaceSectionEvent::FileCreated(SharedPath::from(path)));
     }
 
     pub fn notify_file_renamed(&self, old_path: &Path, new_path: &Path) {
         self.emit_section_event(WorkspaceSectionEvent::FileRenamed(
-            old_path.to_path_buf(),
-            new_path.to_path_buf(),
+            SharedPath::from(old_path),
+            SharedPath::from(new_path),
         ));
     }
 
     pub fn notify_file_deleted(&self, path: &Path) {
-        self.emit_section_event(WorkspaceSectionEvent::FileDeleted(path.to_path_buf()));
+        self.emit_section_event(WorkspaceSectionEvent::FileDeleted(SharedPath::from(path)));
     }
 
     pub(super) fn emit_message(&self, text: &str, severity: NotificationSeverity) {
-        self.emit_section_event(WorkspaceSectionEvent::Message(text.to_string(), severity));
+        self.emit_section_event(WorkspaceSectionEvent::Message(
+            SharedStr::from(text),
+            severity,
+        ));
     }
 
     /// Test helper for exercising the same drop-index logic as row DnD.
@@ -874,14 +856,14 @@ pub(super) fn realized_file_row_overlay_for_path(
 
 /// The path of the item a realized file-row overlay currently renders: the one
 /// place the row factory's overlay → expander → list row → item layout is read.
-pub(super) fn file_row_overlay_path(overlay: &gtk4::Overlay) -> Option<PathBuf> {
+pub(super) fn file_row_overlay_path(overlay: &gtk4::Overlay) -> Option<SharedPath> {
     overlay
         .child()
         .and_downcast::<gtk4::TreeExpander>()?
         .list_row()?
         .item()
         .and_downcast::<FileTreeItem>()?
-        .path()
+        .shared_path()
 }
 
 /// Activate a row: open files, toggle directories, and ignore reorder drags.

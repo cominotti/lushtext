@@ -22,6 +22,7 @@ use std::sync::Arc;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
+use lushtext_model::values::SharedPath;
 
 use super::item::SearchResultItem;
 use super::{LushtextSearchPanel, SearchMatchLocation, SearchProgressUpdate};
@@ -114,11 +115,16 @@ impl SearchCallbacks {
     }
 }
 
+type PathLineCallback = Box<dyn Fn(&Path, u32) + 'static>;
+type MessageCallback = Box<
+    dyn Fn(&str, lushtext_services::coordination::notifications::NotificationSeverity) + 'static,
+>;
+
 impl LushtextSearchPanel {
-    pub(super) fn replace_panel_event_handler<F: Fn(&SearchPanelEvent) + 'static>(
+    pub(super) fn connect_panel_event_boxed(
         &self,
         slot: PanelEventSlot,
-        handler: F,
+        handler: Box<dyn Fn(&SearchPanelEvent) + 'static>,
     ) {
         let index = slot as usize;
         let prev = self.imp().callbacks.signal_handlers.borrow_mut()[index].take();
@@ -168,6 +174,78 @@ impl LushtextSearchPanel {
     pub(super) fn emit_replace_in_editor(&self, path: &Path) {
         self.emit_panel_event(SearchPanelEvent::ReplaceInEditor(path.to_path_buf()));
     }
+
+    pub(super) fn connect_open_file_boxed(&self, f: PathLineCallback) {
+        self.connect_panel_event_boxed(
+            PanelEventSlot::OpenFile,
+            Box::new(move |ev| {
+                if let SearchPanelEvent::OpenFile(path, line) = ev {
+                    f(path, *line);
+                }
+            }),
+        );
+    }
+
+    pub(super) fn connect_close_requested_boxed(&self, f: Box<dyn Fn() + 'static>) {
+        self.connect_panel_event_boxed(
+            PanelEventSlot::CloseRequested,
+            Box::new(move |ev| {
+                if matches!(ev, SearchPanelEvent::CloseRequested) {
+                    f();
+                }
+            }),
+        );
+    }
+
+    pub(super) fn connect_navigate_to_match_boxed(&self, f: PathLineCallback) {
+        self.connect_panel_event_boxed(
+            PanelEventSlot::Navigate,
+            Box::new(move |ev| {
+                if let SearchPanelEvent::Navigate(path, line) = ev {
+                    f(path, *line);
+                }
+            }),
+        );
+    }
+
+    pub(super) fn connect_search_progress_boxed(
+        &self,
+        f: Box<dyn Fn(SearchProgressUpdate) + 'static>,
+    ) {
+        self.connect_panel_event_boxed(
+            PanelEventSlot::Progress,
+            Box::new(move |ev| {
+                if let SearchPanelEvent::Progress(update) = ev {
+                    f(*update);
+                }
+            }),
+        );
+    }
+
+    pub(super) fn connect_guarded_undo_all_boxed(
+        &self,
+        f: Box<dyn Fn(Arc<super::GuardedReplaceUndoBackup>) + 'static>,
+    ) {
+        self.connect_panel_event_boxed(
+            PanelEventSlot::Undo,
+            Box::new(move |ev| {
+                if let SearchPanelEvent::Undo(backup) = ev {
+                    f(Arc::clone(backup));
+                }
+            }),
+        );
+    }
+
+    pub(super) fn connect_message_boxed(&self, f: MessageCallback) {
+        self.connect_panel_event_boxed(
+            PanelEventSlot::Message,
+            Box::new(move |ev| {
+                if let SearchPanelEvent::Message(text, severity) = ev {
+                    f(text, *severity);
+                }
+            }),
+        );
+    }
 }
 
 /// Match-navigation state used by F4 / Shift+F4.
@@ -178,16 +256,16 @@ pub struct SearchNavigationState {
     /// Visible tree rows for each navigation target, captured when rows are appended.
     pub match_rows: RefCell<Vec<Option<gtk4::TreeListRow>>>,
     /// File-header rows keyed by absolute file path for direct child-row lookup.
-    pub file_rows: RefCell<BTreeMap<Arc<Path>, gtk4::TreeListRow>>,
+    pub file_rows: RefCell<BTreeMap<SharedPath, gtk4::TreeListRow>>,
     /// Current position in `match_positions` for wraparound navigation.
     pub current_match_index: Cell<Option<usize>>,
 }
 
 /// Compute a display-friendly relative path for a result file.
 /// Strips the workspace folder prefix for readability.
-pub fn make_display_path(path: &Path, workspace_folders: &[PathBuf]) -> String {
+pub fn make_display_path<P: AsRef<Path>>(path: &Path, workspace_folders: &[P]) -> String {
     for folder in workspace_folders {
-        if let Ok(relative) = path.strip_prefix(folder) {
+        if let Ok(relative) = path.strip_prefix(folder.as_ref()) {
             return relative.display().to_string();
         }
     }

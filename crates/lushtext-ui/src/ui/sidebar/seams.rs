@@ -6,8 +6,9 @@
 //! the expectation at dispatch, a `*Facts` captures observed live state at
 //! completion, and one predicate validates them together.
 
+use lushtext_model::values::SharedPath;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Identity of the row an inline file operation was issued for.
 ///
@@ -29,7 +30,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct FileOperationTicket {
     /// Path the operation was issued against.
-    path: PathBuf,
+    path: SharedPath,
     /// Whether the target was a directory when the operation was issued.
     ///
     /// Captured rather than re-read, because the live cell can describe another
@@ -58,9 +59,9 @@ pub(super) struct FileOperationTargetKind {
 
 impl FileOperationTicket {
     /// Capture one inline file operation's target at dispatch time.
-    pub(super) fn new(path: PathBuf, kind: FileOperationTargetKind) -> Self {
+    pub(super) fn new(path: impl Into<SharedPath>, kind: FileOperationTargetKind) -> Self {
         Self {
-            path,
+            path: path.into(),
             is_dir: kind.is_dir,
             is_new: kind.is_new,
         }
@@ -68,6 +69,11 @@ impl FileOperationTicket {
 
     /// Return the path this operation was issued against.
     pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Borrow the shared path wrapper for O(1) cloning across worker and completion seams.
+    pub(super) const fn shared_path(&self) -> &SharedPath {
         &self.path
     }
 
@@ -97,12 +103,12 @@ impl FileOperationTicket {
 pub(super) struct FileOperationFacts {
     /// Path the captured row's item reports **now**, or `None` if the row or its
     /// item is gone.
-    pub(super) row_path: Option<PathBuf>,
+    pub(super) row_path: Option<SharedPath>,
 }
 
 impl FileOperationFacts {
     /// Record the live row identity one completion must be validated against.
-    pub(super) const fn new(row_path: Option<PathBuf>) -> Self {
+    pub(super) const fn new(row_path: Option<SharedPath>) -> Self {
         Self { row_path }
     }
 }
@@ -114,20 +120,20 @@ impl FileOperationFacts {
 /// and failed-load handling.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SidebarFileRowStateSnapshot {
-    open_identities: HashSet<PathBuf>,
-    active_identities: HashSet<PathBuf>,
+    open_identities: HashSet<SharedPath>,
+    active_identities: HashSet<SharedPath>,
 }
 
 impl SidebarFileRowStateSnapshot {
     /// Build a snapshot from the open and active file identities visible to the window.
     #[must_use]
     pub(crate) fn from_identities(
-        open_identities: HashSet<PathBuf>,
-        active_identities: HashSet<PathBuf>,
+        open_identities: impl IntoIterator<Item = impl Into<SharedPath>>,
+        active_identities: impl IntoIterator<Item = impl Into<SharedPath>>,
     ) -> Self {
         Self {
-            open_identities,
-            active_identities,
+            open_identities: open_identities.into_iter().map(Into::into).collect(),
+            active_identities: active_identities.into_iter().map(Into::into).collect(),
         }
     }
 
@@ -143,16 +149,16 @@ impl SidebarFileRowStateSnapshot {
         self.active_identities.contains(path)
     }
 
-    /// Owned copy of the open-tab identities, for the evidence surface.
+    /// Borrow the open-tab identities, for the evidence surface.
     #[must_use]
-    pub(crate) fn open_identities(&self) -> HashSet<PathBuf> {
-        self.open_identities.clone()
+    pub(crate) fn open_identities(&self) -> &HashSet<SharedPath> {
+        &self.open_identities
     }
 
-    /// Owned copy of the active-tab identities, for the evidence surface.
+    /// Borrow the active-tab identities, for the evidence surface.
     #[must_use]
-    pub(crate) fn active_identities(&self) -> HashSet<PathBuf> {
-        self.active_identities.clone()
+    pub(crate) fn active_identities(&self) -> &HashSet<SharedPath> {
+        &self.active_identities
     }
 }
 
@@ -298,7 +304,7 @@ mod tests {
 
     fn ticket() -> FileOperationTicket {
         FileOperationTicket::new(
-            PathBuf::from("/w/notes.md"),
+            SharedPath::from("/w/notes.md"),
             FileOperationTargetKind {
                 is_dir: false,
                 is_new: false,
@@ -309,7 +315,9 @@ mod tests {
     #[test]
     fn row_is_current_when_the_captured_row_still_holds_the_issued_path() {
         assert!(
-            ticket().row_is_current(&FileOperationFacts::new(Some(PathBuf::from("/w/notes.md"))))
+            ticket().row_is_current(&FileOperationFacts::new(Some(SharedPath::from(
+                "/w/notes.md"
+            ))))
         );
     }
 
@@ -318,7 +326,9 @@ mod tests {
         // The regression this seam exists for: the row now describes another
         // file, so its projection and index entries must not be rewritten.
         assert!(
-            !ticket().row_is_current(&FileOperationFacts::new(Some(PathBuf::from("/w/other.md"))))
+            !ticket().row_is_current(&FileOperationFacts::new(Some(SharedPath::from(
+                "/w/other.md"
+            ))))
         );
     }
 
@@ -330,7 +340,7 @@ mod tests {
     #[test]
     fn the_ticket_reports_the_captured_target_rather_than_live_state() {
         let directory = FileOperationTicket::new(
-            PathBuf::from("/w/sub"),
+            SharedPath::from("/w/sub"),
             FileOperationTargetKind {
                 is_dir: true,
                 is_new: true,
@@ -342,6 +352,33 @@ mod tests {
         let file = ticket();
         assert!(!file.is_dir());
         assert!(!file.is_new());
+        let cloned = file.clone();
+        assert!(SharedPath::ptr_eq(file.shared_path(), cloned.shared_path()));
+    }
+
+    #[test]
+    fn row_state_snapshot_shares_immutable_identities_across_clones() {
+        let open = SharedPath::from("/w/open.rs");
+        let active = SharedPath::from("/w/active.rs");
+        let snapshot =
+            SidebarFileRowStateSnapshot::from_identities([open.clone(), active.clone()], [active]);
+        assert!(snapshot.is_open(Path::new("/w/open.rs")));
+        assert!(snapshot.is_active(Path::new("/w/active.rs")));
+        let cloned = snapshot.clone();
+        let stored_open = cloned
+            .open_identities()
+            .get(Path::new("/w/open.rs"))
+            .expect("open identity stored");
+        assert!(SharedPath::ptr_eq(&open, stored_open));
+        let original_active = snapshot
+            .active_identities()
+            .get(Path::new("/w/active.rs"))
+            .expect("original active identity stored");
+        let cloned_active = cloned
+            .active_identities()
+            .get(Path::new("/w/active.rs"))
+            .expect("cloned active identity stored");
+        assert!(SharedPath::ptr_eq(original_active, cloned_active));
     }
 
     // --- Workspace watch install ---

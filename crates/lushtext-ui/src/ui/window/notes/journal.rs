@@ -29,6 +29,7 @@ use std::path::Path;
 
 use crate::ui::status_bar::MessageKind;
 use lushtext_model::persistence::migration_ledger::MigrationKind;
+use lushtext_model::values::SharedPath;
 use lushtext_services::{
     notes::bookmark_service, notes::document_note_service, notes::folder_note_service,
     persistence::json_store, persistence::local_history_service, persistence::migration_ledger,
@@ -54,8 +55,8 @@ impl LushtextWindow {
         old_path: &Path,
         new_path: &Path,
     ) {
-        let old_path = old_path.to_path_buf();
-        let new_path = new_path.to_path_buf();
+        let old_path = SharedPath::from(old_path);
+        let new_path = SharedPath::from(new_path);
         let old_path_for_move = old_path.clone();
         let new_path_for_move = new_path.clone();
         let window_weak = self.downgrade();

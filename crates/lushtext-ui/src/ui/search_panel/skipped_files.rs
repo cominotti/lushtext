@@ -517,13 +517,13 @@ impl LushtextSearchPanel {
 
     /// Connect Open and Replace in Editor, which a Skipped Files row activates.
     pub fn connect_replace_in_editor<F: Fn(&std::path::Path) + 'static>(&self, f: F) {
-        self.replace_panel_event_handler(
+        self.connect_panel_event_boxed(
             super::results::PanelEventSlot::ReplaceInEditor,
-            move |event| {
-                if let super::results::SearchPanelEvent::ReplaceInEditor(path) = event {
-                    f(path);
+            Box::new(move |ev| {
+                if let super::results::SearchPanelEvent::ReplaceInEditor(p) = ev {
+                    f(p);
                 }
-            },
+            }),
         );
     }
 

@@ -772,7 +772,7 @@ impl LushtextEditorPage {
 
     /// Register a callback fired when the user activates a bookmark gutter mark.
     pub fn connect_bookmark_activated<F: Fn(BookmarkRecord) + 'static>(&self, f: F) {
-        bookmarks::connect_bookmark_activated(self, f);
+        bookmarks::connect_bookmark_activated(self, Box::new(f));
     }
 
     /// Snapshot the current live bookmark projection into pure model records.

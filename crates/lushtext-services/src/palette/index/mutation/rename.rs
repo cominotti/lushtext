@@ -5,7 +5,6 @@
 //! record, its descendants follow it, and what moved is re-keyed.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use crate::filesystem::metadata as fs_metadata;
 use lushtext_model::workspace::palette::PaletteFileIdentityFailure;
@@ -64,7 +63,7 @@ impl FileIndex {
             self.kill_file(ordinal, ledger);
             return;
         };
-        let folder = Arc::clone(self.file_folder(ordinal));
+        let folder = self.file_folder(ordinal).clone();
         let Some(dir) = self.dir_for(parent, &folder, ledger) else {
             self.kill_file(ordinal, ledger);
             return;
@@ -192,7 +191,7 @@ impl FileIndex {
         ledger.batch.last_dir = None;
         let parent = new_path.parent().and_then(|parent| {
             self.longest_root(parent, None, ledger)?;
-            let folder = Arc::clone(&self.folders[old.folder as usize].display);
+            let folder = self.folders[old.folder as usize].display.clone();
             self.dir_for(parent, &folder, ledger)
         });
         ledger.batch.dead_dirs[dir as usize] = false;

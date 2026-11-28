@@ -10,6 +10,7 @@ use crate::common::{
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::palette::{
     CommandCategory, CommandDef, FileOrdinal, PaletteFileEntry, PaletteFileIdentity,
     PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, SearchMode,
@@ -56,13 +57,13 @@ fn delay_palette_index_update_worker(delay: Duration) {
 }
 
 fn in_memory_palette_index(prefix: &str, count: usize) -> FileIndex {
-    let root = Arc::new(PathBuf::from(format!("/synthetic/{prefix}")));
+    let root = SharedPath::from(format!("/synthetic/{prefix}"));
     FileIndex::from_paths((0..count).map(|index| {
         let path = root.join(format!("{prefix}-{index:05}.rs"));
         (
             path.clone(),
             PaletteFileIdentity::canonical(path),
-            Arc::clone(&root),
+            root.clone(),
         )
     }))
 }
@@ -242,7 +243,7 @@ fn test_palette_item_from_indexed_file() {
         path: "/home/user/project/src/main.rs".into(),
         identity: PaletteFileIdentity::canonical("/home/user/project/src/main.rs".into()),
         name: "main.rs".to_string(),
-        workspace_folder: std::sync::Arc::new("/home/user/project".into()),
+        workspace_folder: SharedPath::from("/home/user/project"),
     };
     let index = FileIndex::from(vec![file]);
     let item = PaletteItem::from_indexed_file(index.file(FileOrdinal(0)).expect("one file"));
@@ -295,7 +296,7 @@ fn test_palette_item_file_at_workspace_folder_top_level() {
         path: "/home/user/project/Cargo.toml".into(),
         identity: PaletteFileIdentity::canonical("/home/user/project/Cargo.toml".into()),
         name: "Cargo.toml".to_string(),
-        workspace_folder: std::sync::Arc::new("/home/user/project".into()),
+        workspace_folder: SharedPath::from("/home/user/project"),
     };
     let index = FileIndex::from(vec![file]);
     let item = PaletteItem::from_indexed_file(index.file(FileOrdinal(0)).expect("one file"));
@@ -787,12 +788,12 @@ fn test_command_palette_close_cancels_active_and_pending_without_stale_projectio
 fn test_command_palette_incremental_index_worker_publishes_then_clears_readiness() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
-    let root = Arc::new(PathBuf::from("/synthetic/incremental-index"));
+    let root = SharedPath::from("/synthetic/incremental-index");
     let existing = root.join("existing.rs");
     palette.set_file_index(FileIndex::from(vec![OwnedIndexedFile::new(
         existing.clone(),
         PaletteFileIdentity::canonical(existing),
-        Arc::clone(&root),
+        root.clone(),
     )]));
     palette.open();
     palette.set_search_mode(SearchMode::Files);
@@ -819,19 +820,19 @@ fn test_command_palette_incremental_index_worker_publishes_then_clears_readiness
 fn test_incremental_index_delete_reaches_the_index() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
-    let root = Arc::new(PathBuf::from("/synthetic/incremental-delete"));
+    let root = SharedPath::from("/synthetic/incremental-delete");
     let keep = root.join("keep-me.rs");
     let doomed = root.join("delete-me.rs");
     palette.set_file_index(FileIndex::from(vec![
         OwnedIndexedFile::new(
             keep.clone(),
             PaletteFileIdentity::canonical(keep),
-            Arc::clone(&root),
+            root.clone(),
         ),
         OwnedIndexedFile::new(
             doomed.clone(),
             PaletteFileIdentity::canonical(doomed.clone()),
-            Arc::clone(&root),
+            root,
         ),
     ]));
     palette.open();
@@ -868,12 +869,12 @@ fn test_incremental_index_delete_reaches_the_index() {
 fn test_incremental_index_rename_reaches_the_index() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
-    let root = Arc::new(PathBuf::from("/synthetic/incremental-rename"));
+    let root = SharedPath::from("/synthetic/incremental-rename");
     let before = root.join("before-rename.rs");
     palette.set_file_index(FileIndex::from(vec![OwnedIndexedFile::new(
         before.clone(),
         PaletteFileIdentity::canonical(before.clone()),
-        Arc::clone(&root),
+        root.clone(),
     )]));
     palette.open();
     palette.set_search_mode(SearchMode::Files);

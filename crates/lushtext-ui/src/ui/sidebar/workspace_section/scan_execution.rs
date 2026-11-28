@@ -46,7 +46,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use lushtext_model::budgets::list_budget::turn_continues;
-use lushtext_model::values::MirrorGeneration;
+use lushtext_model::values::{MirrorGeneration, SharedPath};
 use lushtext_model::workspace::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_services::coordination::notifications::NotificationSeverity;
 use lushtext_services::workspace::file_tree::{
@@ -73,13 +73,13 @@ struct ChildScanResult {
 
 pub(super) struct ActiveChildScan {
     ticket: ChildScanTicket,
-    path: PathBuf,
+    path: SharedPath,
     token: Arc<AtomicBool>,
 }
 
 pub(super) struct PendingChildScan {
     ticket: ChildScanTicket,
-    path: PathBuf,
+    path: SharedPath,
     store: glib::WeakRef<gio::ListStore>,
     lookahead_cap: usize,
     visibility: WorkspaceEntryVisibility,
@@ -243,14 +243,14 @@ pub(super) fn populate_child_store(
     dir_path: &Path,
     store: &gio::ListStore,
 ) {
-    let path = dir_path.to_path_buf();
+    let path = SharedPath::from(dir_path);
     {
         let refresh = &section.imp().refresh_runtime;
         refresh
             .scan_submissions
             .set(refresh.scan_submissions.get().saturating_add(1));
         let mut by_path = refresh.scan_submissions_by_path.borrow_mut();
-        let count = by_path.entry(path.clone()).or_insert(0);
+        let count = by_path.entry(path.to_path_buf()).or_insert(0);
         *count = count.saturating_add(1);
     }
     let store_key = child_store_key(store);
@@ -259,12 +259,12 @@ pub(super) fn populate_child_store(
         .imp()
         .child_store_paths
         .borrow_mut()
-        .insert(store_key, path.clone());
+        .insert(store_key, path.to_path_buf());
     section
         .imp()
         .dir_stores
         .borrow_mut()
-        .insert(path.clone(), store.downgrade());
+        .insert(path.to_path_buf(), store.downgrade());
     let settings = crate::ui::settings_writes::shared();
     let lookahead_cap =
         settings.uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP) as usize;
@@ -359,7 +359,7 @@ pub(super) fn start_child_scan(
             .child_store_paths
             .borrow()
             .get(&store_key)
-            .is_none_or(|path| path != &request.path)
+            .is_none_or(|path| path.as_path() != request.path.as_path())
     {
         finish_child_scan(section, store_key, request.ticket);
         return;
@@ -826,7 +826,7 @@ fn child_scan_is_active(
         .get(&store_key)
         .is_some_and(|active| {
             active.ticket == ticket
-                && current_path.as_ref() == Some(&active.path)
+                && current_path.as_deref() == Some(active.path.as_path())
                 && Arc::ptr_eq(&active.token, token)
         });
     owns_current_flight && owns_active_payload
@@ -1130,7 +1130,7 @@ fn cancel_store_reconciliation_if_token(
 /// Owned worker result needed by one current direct or bounded GTK application.
 struct ScannedChildrenPlan {
     store: gio::ListStore,
-    dir_path: PathBuf,
+    dir_path: SharedPath,
     token: Arc<AtomicBool>,
     ticket: ChildScanTicket,
     mirror_generation: MirrorGeneration,
@@ -1284,7 +1284,7 @@ fn retire_removed_child_subtrees(
 fn apply_next_reconcile_batch(
     section: &LushtextWorkspaceSection,
     store: gio::ListStore,
-    dir_path: PathBuf,
+    dir_path: SharedPath,
     token: Arc<AtomicBool>,
     ticket: ChildScanTicket,
     progress: Rc<RefCell<ChildReconcileProgress>>,
@@ -1438,7 +1438,7 @@ const AFTER_FIRST_BATCH_DELAY: Duration = Duration::from_millis(20);
 fn schedule_next_reconcile_batch(
     section: &LushtextWorkspaceSection,
     store: gio::ListStore,
-    dir_path: PathBuf,
+    dir_path: SharedPath,
     token: Arc<AtomicBool>,
     ticket: ChildScanTicket,
     progress: Rc<RefCell<ChildReconcileProgress>>,

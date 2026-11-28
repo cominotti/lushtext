@@ -898,7 +898,7 @@ impl LocalHistoryBrowserState {
             self.preview_buffer.upcast_ref(),
             text,
             &mut session.offset,
-            &mut session.fold,
+            session.fold.as_mut(),
             &self.preview_boundaries,
         ) {
             InstallSlice::Deferred => {

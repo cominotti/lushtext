@@ -25,7 +25,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -36,6 +35,7 @@ use gtk4::prelude::*;
 use gtk4::{self, gio, glib};
 
 use lushtext_model::budgets::list_budget::turn_continues;
+use lushtext_model::values::{SharedPath, SharedPaths, SharedStr};
 use lushtext_model::workspace::content_search::{
     SearchEvent, SearchHistoryEntry, SearchMatch, SearchQuerySpec, SearchRetention,
 };
@@ -71,7 +71,7 @@ pub struct SearchRuntimeState {
     /// Root-level model: contains one file-header row per matching file.
     pub root_store: RefCell<gio::ListStore>,
     /// Per-file child stores keyed by absolute file path.
-    pub file_groups: RefCell<BTreeMap<Arc<Path>, SearchFileGroup>>,
+    pub file_groups: RefCell<BTreeMap<SharedPath, SearchFileGroup>>,
     /// Plain match data in arrival order for non-rendering workflows.
     pub search_matches: RefCell<Vec<SearchMatch>>,
     /// Algebraic search execution phase (idle, running with cancel token, or completed).
@@ -83,7 +83,7 @@ pub struct SearchRuntimeState {
     /// Regression probe for any compatibility path that deep-clones accepted matches.
     pub whole_result_clones: Cell<u64>,
     /// Plain-Rust active-plus-latest ownership policy.
-    pub flight: RefCell<policy::WorkspaceSearchFlight>,
+    pub flight: RefCell<policy::WorkspaceSearchFlight<SharedPaths>>,
     /// Direct active-group count; the single-flight invariant keeps this at zero or one.
     pub active_worker_groups: Cell<u8>,
     /// High-water active-group count for deterministic concurrency evidence.
@@ -93,7 +93,7 @@ pub struct SearchRuntimeState {
     /// Debounce for glob-entry input, separate from the main query.
     pub glob_debounce: Debounce,
     /// Workspace folders to search. Updated by the window when workspaces change.
-    pub workspace_folders: RefCell<Arc<[PathBuf]>>,
+    pub workspace_folders: RefCell<SharedPaths>,
     /// Running total of matches in the current search.
     pub total_matches: Cell<u32>,
     /// Running total of files that currently have at least one match.
@@ -126,7 +126,7 @@ impl Default for SearchRuntimeState {
             active_worker_groups_high_water: Cell::new(0),
             search_debounce: Debounce::default(),
             glob_debounce: Debounce::default(),
-            workspace_folders: RefCell::new(Arc::from([])),
+            workspace_folders: RefCell::new(SharedPaths::default()),
             total_matches: Cell::new(0),
             total_files: Cell::new(0),
             matches_found: Cell::new(0),
@@ -352,7 +352,7 @@ impl LushtextSearchPanel {
             return;
         }
 
-        let folders = Arc::clone(&imp.runtime.workspace_folders.borrow());
+        let folders = imp.runtime.workspace_folders.borrow().clone();
         if folders.is_empty() {
             self.cancel_active_search();
             imp.count_label.set_text("No workspace folders");
@@ -404,7 +404,7 @@ impl LushtextSearchPanel {
     }
 
     /// Launch one request only after the previous controller/walker disconnected.
-    fn spawn_search_request(&self, start: WorkspaceSearchStart) {
+    fn spawn_search_request(&self, start: WorkspaceSearchStart<SharedPaths>) {
         let imp = self.imp();
         debug_assert!(!imp.runtime.is_searching());
         let WorkspaceSearchStart {
@@ -437,7 +437,7 @@ impl LushtextSearchPanel {
 
         let history_spec = spec.clone();
         let worker_spec = spec;
-        let worker_folders = Arc::clone(&folders);
+        let worker_folders = folders.clone();
         let worker_visibility = self.imp().current_entry_visibility();
         let worker_progress_counter = Arc::clone(&progress_counter);
         let worker_finished_for_search = Arc::new(AtomicBool::new(false));
@@ -755,16 +755,16 @@ fn apply_match_batch(
     panel: &LushtextSearchPanel,
     matches: Vec<SearchMatch>,
     traversal_plan: Option<&WorkspaceSearchTraversalPlan>,
-    workspace_folders: &[PathBuf],
+    workspace_folders: &[SharedPath],
 ) {
     let imp = panel.imp();
     let was_empty = imp.runtime.total_matches.get() == 0;
     let match_count = matches.len();
-    let mut order: Vec<Arc<Path>> = Vec::new();
-    let mut batches: HashMap<Arc<Path>, FileBatch> = HashMap::new();
-    let mut new_files: Vec<(Arc<Path>, SearchResultItem)> = Vec::new();
+    let mut order: Vec<SharedPath> = Vec::new();
+    let mut batches: HashMap<SharedPath, FileBatch> = HashMap::new();
+    let mut new_files: Vec<(SharedPath, SearchResultItem)> = Vec::new();
     // (file, position in its child store) per match, for the match rows.
-    let mut placements: Vec<(Arc<Path>, u32)> = Vec::with_capacity(match_count);
+    let mut placements: Vec<(SharedPath, u32)> = Vec::with_capacity(match_count);
     {
         let mut groups = imp.runtime.file_groups.borrow_mut();
         let mut plain = imp.runtime.search_matches.borrow_mut();
@@ -773,8 +773,8 @@ fn apply_match_batch(
             let match_id =
                 lushtext_model::workspace::content_search::SearchMatchId::from_index(plain.len());
             let search_match = search_match.with_id(match_id);
-            let path = Arc::clone(&search_match.path);
-            let group = groups.entry(Arc::clone(&path)).or_insert_with(|| {
+            let path = search_match.path.clone();
+            let group = groups.entry(path.clone()).or_insert_with(|| {
                 let display = traversal_plan
                     .and_then(|plan| {
                         plan.display_relative_path(search_match.traversal_root_index, &path)
@@ -783,13 +783,13 @@ fn apply_match_batch(
                         || make_display_path(&path, workspace_folders),
                         |relative| relative.display().to_string(),
                     );
-                let path_text: Arc<str> = Arc::from(path.display().to_string());
+                let path_text = SharedStr::from(path.display().to_string());
                 let header = SearchResultItem::new_file_shared(path_text, &display, 0);
-                new_files.push((Arc::clone(&path), header.clone()));
+                new_files.push((path.clone(), header.clone()));
                 SearchFileGroup::new(header, gtk4::gio::ListStore::new::<SearchResultItem>())
             });
-            let batch = batches.entry(Arc::clone(&path)).or_insert_with(|| {
-                order.push(Arc::clone(&path));
+            let batch = batches.entry(path.clone()).or_insert_with(|| {
+                order.push(path.clone());
                 FileBatch {
                     child_store: group.child_store.clone(),
                     header_item: group.header_item.clone(),
@@ -810,7 +810,7 @@ fn apply_match_batch(
                 end,
                 match_id,
             ));
-            positions.push(SearchMatchLocation::new(Arc::clone(&path), line_number));
+            positions.push(SearchMatchLocation::new(path.clone(), line_number));
             placements.push((path, child_position));
             plain.push(search_match);
         }
@@ -856,7 +856,7 @@ fn apply_match_batch(
                 row.set_expanded(true);
                 let children = row.children().map_or(0, |children| children.n_items());
                 position = position.saturating_add(1).saturating_add(children);
-                file_rows.insert(Arc::clone(path), row);
+                file_rows.insert(path.clone(), row);
             }
         }
     }
@@ -987,5 +987,38 @@ mod tests {
             .expect("terminal fixture receiver");
 
         assert_eq!(receive_one_turn(&receiver), (3, true));
+    }
+
+    #[test]
+    fn active_and_pending_requests_share_immutable_scope_snapshots() {
+        use lushtext_model::workspace::content_search::ContentSearchOptions;
+        use std::path::PathBuf;
+
+        let shared =
+            SharedPaths::from([PathBuf::from("/workspace/a"), PathBuf::from("/workspace/b")]);
+        let changed = SharedPaths::from([PathBuf::from("/workspace/changed")]);
+        let request = |query: &str, folders: SharedPaths| WorkspaceSearchRequest {
+            spec: SearchQuerySpec {
+                query: query.to_string(),
+                options: ContentSearchOptions::default(),
+            },
+            folders,
+        };
+
+        let mut flight = policy::WorkspaceSearchFlight::default();
+        let WorkspaceSearchSubmission::Start(active) =
+            flight.submit(request("first", shared.clone()))
+        else {
+            panic!("first request should start");
+        };
+        flight.submit(request("latest", shared.clone()));
+        let pending = flight
+            .finish(active.generation)
+            .expect("latest request should start");
+
+        assert!(SharedPaths::ptr_eq(&active.request.folders, &shared));
+        assert!(SharedPaths::ptr_eq(&pending.request.folders, &shared));
+        assert!(!SharedPaths::ptr_eq(&pending.request.folders, &changed));
+        assert_eq!(pending.request.folders.as_ref(), shared.as_ref());
     }
 }

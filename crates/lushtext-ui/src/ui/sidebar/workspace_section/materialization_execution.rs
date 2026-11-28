@@ -40,12 +40,13 @@ use crate::ui::sidebar::policy::{
     MaterializationDisposition, MaterializationFacts, materialization_disposition,
     materialization_drain_step,
 };
+use lushtext_model::values::SharedPath;
 
 /// One child `gio::ListStore` returned by `build_children_model`, waiting for
 /// the `Priority::HIGH` drain to observe whether GTK kept it alive.
 pub(super) struct PendingMaterialization {
     store: glib::WeakRef<gio::ListStore>,
-    path: PathBuf,
+    path: SharedPath,
     lifetime: u64,
     retired: bool,
 }
@@ -70,7 +71,7 @@ pub(super) fn enqueue_child_store_materialization(
 
     let entry = PendingMaterialization {
         store: store.downgrade(),
-        path: dir_path.to_path_buf(),
+        path: SharedPath::from(dir_path),
         lifetime: imp.child_scan_lifetime.get(),
         retired: false,
     };

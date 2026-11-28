@@ -15,11 +15,12 @@
 //! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
 //! stated below and in the workflow's matrix row.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use gtk4::prelude::ObjectExt;
 
 use crate::ui::signal_connect;
+use lushtext_model::values::{SharedPath, SharedStr};
 use lushtext_model::workspace::{WorkspaceId, WorkspaceScope};
 use lushtext_services::coordination::notifications::NotificationSeverity;
 
@@ -29,15 +30,15 @@ use super::{LushtextSidebar, WorkspaceSection};
 /// GObject signal.
 #[derive(Clone)]
 pub(super) enum SidebarEvent {
-    FileActivated(PathBuf),
-    LocalHistoryRequested(PathBuf),
-    DocumentNoteRequested(PathBuf),
-    FileRenamed(PathBuf, PathBuf),
-    FileDeleted(PathBuf),
-    FileCreated(PathBuf),
-    Message(String, NotificationSeverity),
+    FileActivated(SharedPath),
+    LocalHistoryRequested(SharedPath),
+    DocumentNoteRequested(SharedPath),
+    FileRenamed(SharedPath, SharedPath),
+    FileDeleted(SharedPath),
+    FileCreated(SharedPath),
+    Message(SharedStr, NotificationSeverity),
     FolderNoteRequested(WorkspaceId),
-    FolderNoteForFolderRequested(WorkspaceId, PathBuf),
+    FolderNoteForFolderRequested(WorkspaceId, SharedPath),
     WorkspaceStructureChanged,
     WorkspaceScopeChanged(WorkspaceScope),
 }
@@ -182,7 +183,7 @@ impl LushtextSidebar {
         signal_connect::emit_void(self, "sidebar-event", &[&BoxedSidebarEvent(event)]);
     }
 
-    pub(super) fn connect_sidebar_event<F: Fn(&SidebarEvent) + 'static>(&self, handler: F) {
+    pub(super) fn connect_sidebar_event(&self, handler: Box<dyn Fn(&SidebarEvent) + 'static>) {
         signal_connect::connect_void(self, "sidebar-event", false, move |values| {
             if let Some(Ok(boxed)) = values.get(1).map(glib::Value::get::<&BoxedSidebarEvent>) {
                 handler(&boxed.0);
@@ -191,34 +192,34 @@ impl LushtextSidebar {
     }
 
     fn emit_file_activated(&self, path: &Path) {
-        self.emit_sidebar_event(SidebarEvent::FileActivated(path.to_path_buf()));
+        self.emit_sidebar_event(SidebarEvent::FileActivated(SharedPath::from(path)));
     }
 
     fn emit_local_history_requested(&self, path: &Path) {
-        self.emit_sidebar_event(SidebarEvent::LocalHistoryRequested(path.to_path_buf()));
+        self.emit_sidebar_event(SidebarEvent::LocalHistoryRequested(SharedPath::from(path)));
     }
 
     fn emit_document_note_requested(&self, path: &Path) {
-        self.emit_sidebar_event(SidebarEvent::DocumentNoteRequested(path.to_path_buf()));
+        self.emit_sidebar_event(SidebarEvent::DocumentNoteRequested(SharedPath::from(path)));
     }
 
     fn emit_file_renamed(&self, old_path: &Path, new_path: &Path) {
         self.emit_sidebar_event(SidebarEvent::FileRenamed(
-            old_path.to_path_buf(),
-            new_path.to_path_buf(),
+            SharedPath::from(old_path),
+            SharedPath::from(new_path),
         ));
     }
 
     fn emit_file_deleted(&self, path: &Path) {
-        self.emit_sidebar_event(SidebarEvent::FileDeleted(path.to_path_buf()));
+        self.emit_sidebar_event(SidebarEvent::FileDeleted(SharedPath::from(path)));
     }
 
     fn emit_file_created(&self, path: &Path) {
-        self.emit_sidebar_event(SidebarEvent::FileCreated(path.to_path_buf()));
+        self.emit_sidebar_event(SidebarEvent::FileCreated(SharedPath::from(path)));
     }
 
     pub(super) fn emit_message(&self, text: &str, severity: NotificationSeverity) {
-        self.emit_sidebar_event(SidebarEvent::Message(text.to_string(), severity));
+        self.emit_sidebar_event(SidebarEvent::Message(SharedStr::from(text), severity));
     }
 
     fn emit_folder_note_requested(&self, workspace_id: &WorkspaceId) {
@@ -228,7 +229,7 @@ impl LushtextSidebar {
     fn emit_folder_note_for_folder_requested(&self, workspace_id: &WorkspaceId, path: &Path) {
         self.emit_sidebar_event(SidebarEvent::FolderNoteForFolderRequested(
             workspace_id.clone(),
-            path.to_path_buf(),
+            SharedPath::from(path),
         ));
     }
 }

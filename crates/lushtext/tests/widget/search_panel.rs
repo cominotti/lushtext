@@ -627,7 +627,7 @@ fn test_search_panel_set_workspace_folders() {
     panel.set_workspace_folders(workspace_folders.clone());
     assert_eq!(
         panel.imp().runtime.workspace_folders.borrow().as_ref(),
-        workspace_folders.as_slice()
+        lushtext_model::values::SharedPaths::from(workspace_folders).as_ref()
     );
 }
 

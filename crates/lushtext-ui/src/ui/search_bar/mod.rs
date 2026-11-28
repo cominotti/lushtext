@@ -265,12 +265,18 @@ impl LushtextSearchBar {
     /// Connect a handler for when the search bar should close
     /// (close button clicked or Escape pressed in the search entry).
     pub fn connect_close<F: Fn() + Clone + 'static>(&self, f: F) {
+        self.connect_close_boxed(Box::new(f));
+    }
+
+    fn connect_close_boxed(&self, f: Box<dyn Fn() + 'static>) {
+        let f: std::rc::Rc<dyn Fn()> = std::rc::Rc::from(f);
         // Stored for keyboard handlers such as Escape in the replace entry.
-        *self.imp().close_callback.borrow_mut() = Some(Box::new(f.clone()));
+        let for_slot = std::rc::Rc::clone(&f);
+        *self.imp().close_callback.borrow_mut() = Some(Box::new(move || for_slot()));
         // Wired directly so both work before `attach` is ever called, which
         // matters for tests and for the initial editor-page construction.
-        let f2 = f.clone();
-        self.imp().close_button.connect_clicked(move |_| f2());
+        let for_btn = std::rc::Rc::clone(&f);
+        self.imp().close_button.connect_clicked(move |_| for_btn());
         self.imp().search_entry.connect_stop_search(move |_| f());
     }
 

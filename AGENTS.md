@@ -26,7 +26,7 @@ Keep this index in sync with `.agents/rules/*.md` (`scripts/check-agent-docs.sh`
 - `git.md` — git workflow and commit conventions
 - `parallel-agent-work.md` — how parallel agents share the workstation and reach `main`: host ownership, CPU and memory sizing, implementation slots (five, three while a ready unit is queued; `scripts/impl-slots.sh`), ordering, foreground waits, drain-first measurements judged on busy CPUs (`scripts/quiet-gate.py`), serialized merges on local evidence with append-only, tree-keyed gate records (`scripts/gate-trees.sh`) and every gate rerun after a non-empty `origin/main` merge, durability, running a change through `.claude/workflows/programme-change.js`, the fast lane, design revisions, the stages after implementation, and the workflow-agent guard and outward writes
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
-- `rust.md` — Rust language, filesystem boundary, error and literal ownership, power-of-two threshold rounding and the `make check-thresholds` inventory, explicit SIMD, module splitting, and state grouping
+- `rust.md` — Rust language, Two-Zone Rust Rule (`SharedPath`/`SharedStr`, `DisposalOwned`, cold `<F: Fn*>`), filesystem boundary, error and literal ownership, power-of-two threshold rounding and the `make check-thresholds` inventory, explicit SIMD, module splitting, and state grouping
 - `testing.md` — what every Rust, script or fuzz edit needs: temporary-file ownership (bounded runner output scans, PID-bearing sweepable names), test isolation from real app data, test-only code never shipping, proof obligations and gate order before a commit, Kani harness and GTK axiom probe authoring, runtime warnings
 - `ui.md` — UI and theming: widget hierarchy, staged composition, Libadwaita widget choice, state extremes, accessibility metadata, file tree and sidebar, inline alerts, dialogs, GSettings bindings, split views, large-buffer guardrails
 - `verification-runs.md` — shared-machine agent work (the `heavy.sh`/`measure.sh`/`wait-for.sh` lock protocol, envelopes for commands that admit their own memory scopes, the admission order, and wait rules) and which Kani, proof-strength, GTK axiom and timing runs a change needs, and when: Kani budget dispatch at the end of implementation, and the verdict classes (non-inferiority or improvement-gated)
@@ -291,7 +291,7 @@ fail-closed by `scripts/precommit-scope.py`, or reuses a 30-minute
 clean-worktree `git write-tree` stamp when `make check` already passed on that
 exact tree; `make check-precommit-scope` fails if a Rust build input is on its
 allowlist), and `make check` also runs the fast static policy audits (`make check-policy`:
-filesystem boundary, hexagonal crate boundaries, domain value types, typed error contracts, idiomatic state & C-ism gates (`make check-idiomatic-state`), Python hygiene (`make check-python-hygiene`), Blueprint drift and template contract, and the rest).
+filesystem boundary, hexagonal crate boundaries, domain value types, typed error contracts, idiomatic state & C-ism gates (`make check-idiomatic-state`), Two-Zone Arc safety (`make check-arc-safety`), Python hygiene (`make check-python-hygiene`), Blueprint drift and template contract, and the rest).
 Broad Clippy groups (`restriction`, `pedantic`, `nursery`, `cargo`) are
 advisory discovery inputs, not blocking policy; run `make lint-advisory` after a
 toolchain or dependency update. Dependency policy is

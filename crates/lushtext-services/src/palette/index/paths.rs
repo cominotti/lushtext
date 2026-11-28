@@ -11,8 +11,8 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
+use lushtext_model::values::SharedPath;
 use lushtext_model::workspace::palette::{PaletteFileIdentity, PaletteFileIdentityFailure};
 
 use super::FileIndex;
@@ -149,7 +149,7 @@ impl FileIndex {
         }
     }
 
-    pub(super) fn file_folder(&self, ordinal: u32) -> &Arc<PathBuf> {
+    pub(super) fn file_folder(&self, ordinal: u32) -> &SharedPath {
         let dir = self.files[ordinal as usize].dir;
         &self.folders[self.dirs[dir as usize].folder as usize].display
     }
